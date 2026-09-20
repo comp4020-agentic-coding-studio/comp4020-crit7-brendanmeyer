@@ -1,0 +1,137 @@
+name: checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # /ship dispatches a run after flipping the repo public, since the flip
+  # itself triggers no push event.
+  workflow_dispatch:
+
+# One deploy at a time, and never cancel one mid-flight.
+concurrency:
+  group: deploy
+  cancel-in-progress: false
+
+jobs:
+  check:
+    # Runs once the repo is public; until then `pnpm check` is the same
+    # sensors, locally.
+    if: ${{ !github.event.repository.private }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0 # full history so the secret scan can see all commits
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build and run the spec
+        run: pnpm check
+      - name: Check the process evidence
+        # skipped in the template repo itself, where PROCESS.md is still the
+        # boilerplate every student replaces
+        if: ${{ !github.event.repository.is_template }}
+        run: pnpm check:evidence
+      - name: Scan for committed secrets
+        # Pinned in both halves (action SHA and scanner image) because this
+        # runs in every repo in the course. Bump between semesters.
+        uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11 # v3.96.0
+        with:
+          version: "3.96.0"
+          extra_args: --only-verified
+      - name: Scan for a committed course key
+        # A course key has no verifier a runner can reach, so this pass
+        # matches its shape instead (.github/trufflehog.yml).
+        uses: trufflesecurity/trufflehog@6f3c981e7b77f235fd2702dd74af25fc4b72bf11 # v3.96.0
+        with:
+          version: "3.96.0"
+          extra_args: >-
+            --config=.github/trufflehog.yml
+            --include-detectors=CustomRegex --results=unverified
+            --no-verification
+
+  deploy:
+    needs: check
+    # The template repo itself has no Fly app; only student repos deploy.
+    if: ${{ !github.event.repository.private && !github.event.repository.is_template && github.ref == 'refs/heads/main' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    # Registers the GitHub Deployment with the live URL. The app is named
+    # after this repo, so the URL needs no lookup.
+    environment:
+      name: fly
+      url: https://${{ github.event.repository.name }}.fly.dev
+    env:
+      FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+      APP_URL: https://${{ github.event.repository.name }}.fly.dev
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v6 # for the pnpm dlx link check below
+      - uses: superfly/flyctl-actions/setup-flyctl@fc53c09e1bc3be6f54706524e3b82c4f462f77be # 1.5
+      - name: Deploy
+        # --remote-only builds the Dockerfile on Fly's builders; --ha=false
+        # keeps the app at one machine and one volume.
+        run: flyctl deploy --remote-only --ha=false -a ${{ github.event.repository.name }}
+      - name: Verify the deployed site is online
+        run: |
+          for i in 1 2 3 4 5; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "$APP_URL" || true)
+            if [ "$code" = "200" ]; then echo "online: $APP_URL"; exit 0; fi
+            echo "attempt $i: HTTP $code, retrying in 10s..."
+            sleep 10
+          done
+          echo "site did not return 200"; exit 1
+      - name: Verify the live-update stream is streaming
+        # the SSE endpoint sends an opening comment immediately
+        run: |
+          first=$(curl -sN -m 15 "$APP_URL/api/events" | head -c 12 || true)
+          if [ -n "$first" ]; then
+            echo "streaming: $APP_URL/api/events"
+          else
+            echo "no bytes from the SSE endpoint"; exit 1
+          fi
+      - name: Verify the deployed app knows it is serving https
+        # Behind Fly's proxy an app can decide it serves http and then 403
+        # every same-origin form POST. Any status but 403 means it's right.
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Origin: $APP_URL" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data "probe=1" "$APP_URL/" -m 20 || true)
+          if [ "$code" = "403" ]; then
+            echo "the deployed app rejects same-origin form POSTs (HTTP 403)."
+            echo "it thinks it is serving http, not https, so every form in"
+            echo "your app is broken in production. astro.config.ts needs the"
+            echo "deploy domain in security.allowedDomains."
+            exit 1
+          fi
+          echo "same-origin POST accepted (HTTP $code): the app knows its origin"
+      - name: Verify CSRF protection is still on
+        # A foreign Origin must still be refused.
+        run: |
+          code=$(curl -s -o /dev/null -w "%{http_code}" -X POST \
+            -H "Origin: https://cross-site.example.com" \
+            -H "Content-Type: application/x-www-form-urlencoded" \
+            --data "probe=1" "$APP_URL/" -m 20 || true)
+          if [ "$code" = "403" ]; then
+            echo "cross-site POST refused: CSRF protection is on"
+          else
+            echo "a cross-site form POST was NOT refused (HTTP $code) — CSRF"
+            echo "protection looks disabled. Did security.checkOrigin get set"
+            echo "to false, or is / prerendered? Astro skips the check on"
+            echo "prerendered routes."
+            exit 1
+          fi
+      - name: Check internal links on the live site
+        # Internal links only; the skip is anchored to this app's own origin
+        # so outbound links can't redden a deploy.
+        run: pnpm dlx linkinator "$APP_URL" --recurse --silent --skip "^(?!$APP_URL)"

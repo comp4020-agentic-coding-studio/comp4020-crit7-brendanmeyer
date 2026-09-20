@@ -1,0 +1,40 @@
+body {
+  margin: 0;
+  padding: 2rem;
+  font-family: system-ui, sans-serif;
+  line-height: 1.6;
+  color: #1a1a1a;
+}
+
+main {
+  max-width: 40rem;
+  margin: 0 auto;
+}
+
+a {
+  color: #0b5fff;
+}
+
+form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-block: 1.5rem;
+}
+
+input {
+  flex: 1;
+  min-width: 12rem;
+  padding: 0.4rem 0.6rem;
+  font: inherit;
+}
+
+button {
+  padding: 0.4rem 1rem;
+  font: inherit;
+}
+
+#messages {
+  padding-inline-start: 1.2rem;
+}

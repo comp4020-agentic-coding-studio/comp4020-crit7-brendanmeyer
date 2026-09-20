@@ -1,0 +1,34 @@
+{
+  "name": "comp4020-dynamic-prototype",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "prepare": "git rev-parse --git-dir >/dev/null 2>&1 && git config core.hooksPath .githooks || true",
+    "dev": "astro dev",
+    "build": "astro build",
+    "preview": "astro preview",
+    "typecheck": "astro check",
+    "check": "pnpm typecheck && pnpm test",
+    "check:evidence": "node scripts/check-evidence.ts",
+    "test": "astro build && vitest run",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@astrojs/node": "^11.1.6",
+    "astro": "^7.3.3",
+    "better-sqlite3": "^13.0.3",
+    "drizzle-orm": "^0.45.2"
+  },
+  "devDependencies": {
+    "@astrojs/check": "^0.9.10",
+    "@astrojs/markdown-satteri": "0.4.1",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/jsdom": "^28.0.3",
+    "axe-core": "^4.13.0",
+    "drizzle-kit": "^0.31.10",
+    "jsdom": "^29.1.1",
+    "typescript": "^6.0.3",
+    "vitest": "^4.1.10"
+  },
+  "packageManager": "pnpm@11.9.0"
+}

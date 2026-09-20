@@ -1,0 +1,38 @@
+# Deploy config for the course-managed Fly.io setup. The machine, volume and
+# auto-stop settings are the shape the course watches — leave them as they are.
+# There's no `app` line: the app is named after this repo, and the deploy
+# command passes it. While the repo is private you deploy by hand from here,
+# with the token the course sent you sitting in mise.local.toml:
+#
+#   flyctl deploy --remote-only --ha=false -a <this-repo-name>
+#
+# (remote build on Fly's builders; one machine, one volume). Once you ship the
+# repo public, CI runs the same command on every push to main.
+
+primary_region = "syd"
+
+[build]
+dockerfile = "Dockerfile"
+
+[env]
+# the SQLite file lives on the volume, so state survives reloads, restarts,
+# and redeploys
+DATABASE_PATH = "/data/app.db"
+
+[http_service]
+internal_port = 4321
+force_https = true
+# the machine stops when nobody's using it and starts on the next request —
+# this is most of why the app costs cents, not dollars
+auto_stop_machines = "stop"
+auto_start_machines = true
+min_machines_running = 0
+
+[[vm]]
+size = "shared-cpu-1x"
+memory = "256mb"
+
+[mounts]
+source = "data"
+destination = "/data"
+initial_size = "1gb"

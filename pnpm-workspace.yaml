@@ -1,0 +1,11 @@
+# esbuild (used by Vite/Astro) needs its postinstall to set up its native
+# binary; better-sqlite3 fetches its prebuilt binding the same way.
+allowBuilds:
+  esbuild: true
+  better-sqlite3: true
+# pnpm's minimum-release-age setting would otherwise block installing this
+# freshly released version. Pinned exact (pnpm's exclusion list takes exact
+# versions or `||`-joined exact versions, not semver ranges, so this can't
+# just track package.json's ^0.9.10) --- bump it alongside that dependency.
+minimumReleaseAgeExclude:
+  - '@astrojs/check@0.9.10'
