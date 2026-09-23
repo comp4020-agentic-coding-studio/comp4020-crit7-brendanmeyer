@@ -1,40 +1,287 @@
 body {
   margin: 0;
-  padding: 2rem;
+  padding: 0 0 3rem;
   font-family: system-ui, sans-serif;
   line-height: 1.6;
   color: #1a1a1a;
+  background: #f4f5f7;
+}
+
+nav[aria-label="site"] {
+  display: flex;
+  gap: 1rem;
+  padding: 0.75rem 1.5rem;
+  background: #4b2e83;
+}
+
+nav[aria-label="site"] a {
+  color: #fff;
+  font-weight: 600;
+  text-decoration: none;
+}
+
+nav[aria-label="site"] a:hover {
+  text-decoration: underline;
 }
 
 main {
-  max-width: 40rem;
+  max-width: 60rem;
   margin: 0 auto;
+  padding: 1.5rem;
 }
 
 a {
-  color: #0b5fff;
+  color: #4b2e83;
 }
 
-form {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.5rem;
-  align-items: center;
+h1 {
+  margin-top: 0;
+}
+
+/* PeopleSoft-Fluid-style homepage tiles */
+.tile-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 1rem;
   margin-block: 1.5rem;
 }
 
-input {
+.tile,
+.tile-inert {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5rem;
+  padding: 1.25rem 0.75rem;
+  min-height: 6.5rem;
+  background: #fff;
+  border: 1px solid #d7d7dc;
+  border-radius: 0.25rem;
+  text-align: center;
+  text-decoration: none;
+  color: #1a1a1a;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 8%);
+}
+
+.tile {
+  cursor: pointer;
+}
+
+.tile:hover {
+  border-color: #4b2e83;
+}
+
+.tile-inert {
+  opacity: 0.55;
+}
+
+.avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.5rem;
+  height: 2.5rem;
+  border-radius: 50%;
+  background: #4b2e83;
+  color: #fff;
+  font-weight: 700;
+  font-size: 0.9rem;
+}
+
+.tile-icon {
+  font-size: 1.75rem;
+}
+
+.role-badge {
+  display: inline-block;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: #4b2e83;
+}
+
+/* Fluid-UI-style stacked list rows */
+.list-row {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.75rem 1rem;
+  background: #fff;
+  border: 1px solid #e3e3e8;
+  border-radius: 0.25rem;
+  margin-block-end: 0.5rem;
+}
+
+.list-row-main {
+  flex: 1 1 16rem;
+}
+
+.list-row-title {
+  font-weight: 600;
+}
+
+.list-row-meta {
+  font-size: 0.85rem;
+  color: #55555b;
+}
+
+.status-pill {
+  display: inline-block;
+  padding: 0.15rem 0.6rem;
+  border-radius: 999px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+  border: 1px solid transparent;
+}
+
+.status-pill.status-submitted {
+  background: #fff4cc;
+  color: #6b5300;
+}
+
+.status-pill.status-approved {
+  background: #d9f2df;
+  color: #1e5c34;
+}
+
+.status-pill.status-denied {
+  background: #fddcdc;
+  color: #7a1c1c;
+}
+
+.status-pill.status-cancel_requested {
+  background: #ffe3cc;
+  color: #7a3d00;
+}
+
+.status-pill.status-cancelled {
+  background: #e3e3e8;
+  color: #45454b;
+}
+
+.inline-actions {
+  display: flex;
+  gap: 0.5rem;
+}
+
+form.card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  max-width: 32rem;
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #e3e3e8;
+  border-radius: 0.25rem;
+  margin-block: 1.5rem;
+}
+
+form.card label {
+  font-weight: 600;
+  font-size: 0.9rem;
+}
+
+form.card .field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.field-row {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.field-row .field {
   flex: 1;
-  min-width: 12rem;
+  min-width: 8rem;
+}
+
+input,
+select,
+textarea {
   padding: 0.4rem 0.6rem;
   font: inherit;
+  border: 1px solid #c4c4cc;
+  border-radius: 0.2rem;
 }
 
 button {
-  padding: 0.4rem 1rem;
+  padding: 0.5rem 1.1rem;
   font: inherit;
+  font-weight: 600;
+  border: none;
+  border-radius: 0.2rem;
+  background: #4b2e83;
+  color: #fff;
+  cursor: pointer;
 }
 
-#messages {
-  padding-inline-start: 1.2rem;
+button.secondary {
+  background: #fff;
+  color: #4b2e83;
+  border: 1px solid #4b2e83;
+}
+
+button.deny {
+  background: #7a1c1c;
+}
+
+button:hover {
+  opacity: 0.9;
+}
+
+.hint {
+  font-size: 0.8rem;
+  color: #55555b;
+}
+
+.banner {
+  padding: 0.75rem 1rem;
+  border-radius: 0.25rem;
+  margin-block-end: 1rem;
+  font-weight: 600;
+}
+
+.banner-error {
+  background: #fddcdc;
+  color: #7a1c1c;
+  border: 1px solid #f0b4b4;
+}
+
+.empty-state {
+  color: #55555b;
+  font-style: italic;
+}
+
+.balance-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(9rem, 1fr));
+  gap: 1rem;
+  margin-block: 1.5rem;
+}
+
+.balance-tile {
+  padding: 1rem;
+  background: #fff;
+  border: 1px solid #e3e3e8;
+  border-radius: 0.25rem;
+  text-align: center;
+}
+
+.balance-tile .balance-days {
+  font-size: 1.5rem;
+  font-weight: 700;
+  color: #4b2e83;
+}
+
+.balance-tile .balance-label {
+  font-size: 0.8rem;
+  color: #55555b;
 }

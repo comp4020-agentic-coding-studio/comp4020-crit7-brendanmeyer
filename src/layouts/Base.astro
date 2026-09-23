@@ -1,0 +1,31 @@
+---
+// Shared page shell: lang, viewport, title and the site nav landmark live
+// here once instead of being duplicated per page. Every route renders
+// through this so the structural invariants (lang / title / viewport / nav)
+// can't drift out of sync as pages are added.
+import "../styles.css";
+
+interface Props {
+  title: string;
+}
+
+const { title } = Astro.props;
+---
+
+<!doctype html>
+<html lang="en-AU">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>{title}</title>
+  </head>
+  <body>
+    <nav aria-label="site">
+      <a href="/">HORUS</a>
+      <a href="/readme/">About</a>
+    </nav>
+    <main>
+      <slot />
+    </main>
+  </body>
+</html>
