@@ -7,6 +7,13 @@ body {
   background: #f4f5f7;
 }
 
+/* Several elements below (e.g. form.card .field) set their own `display`,
+   which otherwise wins over the browser's built-in [hidden] rule since
+   author styles always beat user-agent ones regardless of specificity. */
+[hidden] {
+  display: none !important;
+}
+
 nav[aria-label="site"] {
   display: flex;
   gap: 1rem;
