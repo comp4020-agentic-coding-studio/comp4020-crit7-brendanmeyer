@@ -1,0 +1,27 @@
+---
+import Base from "../../../layouts/Base.astro";
+import { getPerson, isManager, listPendingApprovalsForManager } from "../../../lib/db";
+
+const personId = Number(Astro.params.personId);
+const person = getPerson(personId);
+if (!person) return Astro.redirect("/", 302);
+if (!isManager(person)) return Astro.redirect(`/ess/${person.id}`, 302);
+
+const pendingCount = listPendingApprovalsForManager(person.id).length;
+---
+
+<Base title="Manager Self Service">
+  <h1>Manager Self Service</h1>
+  <p class="hint">{person.name} · {person.title}</p>
+  <div class="tile-grid">
+    <a class="tile" href={`/mss/${person.id}/approvals`}>
+      <span class="tile-icon" aria-hidden="true">✅</span>
+      <span class="list-row-title">Approvals</span>
+      <span class="hint">{pendingCount} pending</span>
+    </a>
+    <a class="tile" href={`/mss/${person.id}/team`}>
+      <span class="tile-icon" aria-hidden="true">👥</span>
+      <span class="list-row-title">My Team</span>
+    </a>
+  </div>
+</Base>

@@ -1,0 +1,27 @@
+---
+import Base from "../../../../layouts/Base.astro";
+import { getPerson, isManager, listDirectReports } from "../../../../lib/db";
+
+const personId = Number(Astro.params.personId);
+const person = getPerson(personId);
+if (!person) return Astro.redirect("/", 302);
+if (!isManager(person)) return Astro.redirect(`/ess/${person.id}`, 302);
+
+const reports = listDirectReports(person.id);
+---
+
+<Base title="My Team">
+  <h1>My Team</h1>
+  <p class="hint">{person.name} · Manager Self Service</p>
+  {
+    reports.map((report) => (
+      <div class="list-row">
+        <div class="list-row-main">
+          <div class="list-row-title">{report.name}</div>
+          <div class="list-row-meta">{report.title}</div>
+        </div>
+        <a href={`/mss/${person.id}/team/${report.id}`}>View absence history</a>
+      </div>
+    ))
+  }
+</Base>

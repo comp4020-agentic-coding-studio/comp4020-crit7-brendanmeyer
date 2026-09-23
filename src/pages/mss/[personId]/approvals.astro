@@ -1,0 +1,48 @@
+---
+import Base from "../../../layouts/Base.astro";
+import { errorMessage } from "../../../lib/error-messages";
+import { hoursToDays } from "../../../lib/leave-hours";
+import { getPerson, isManager, listPendingApprovalsForManager } from "../../../lib/db";
+
+const personId = Number(Astro.params.personId);
+const person = getPerson(personId);
+if (!person) return Astro.redirect("/", 302);
+if (!isManager(person)) return Astro.redirect(`/ess/${person.id}`, 302);
+
+const pending = listPendingApprovalsForManager(person.id);
+const error = errorMessage(Astro.url.searchParams.get("error") ?? undefined);
+---
+
+<Base title="Pending Approvals">
+  <h1>Pending Approvals</h1>
+  <p class="hint">{person.name} · Manager Self Service</p>
+
+  {error && <p class="banner banner-error">{error}</p>}
+
+  {pending.length === 0 && <p class="empty-state">Nothing waiting on you right now.</p>}
+  {
+    pending.map((request) => (
+      <form class="card" method="post" action="/api/leave/decide">
+        <input type="hidden" name="managerId" value={person.id} />
+        <input type="hidden" name="requestId" value={request.id} />
+        <h2>{request.kind === "cancel_absence" ? "Cancel Absence" : "Leave Request"}</h2>
+        <p class="list-row-meta">
+          {request.person.name} · {request.leaveType.name} · {request.startDate} to {request.endDate} ·{" "}
+          {hoursToDays(request.hoursRequested).toFixed(1)} days
+        </p>
+        {request.reason && <p class="list-row-meta">Reason: {request.reason}</p>}
+        {request.cancellationReason && (
+          <p class="list-row-meta">Cancellation reason: {request.cancellationReason}</p>
+        )}
+        <div class="inline-actions">
+          <button type="submit" name="decision" value="approve">
+            Approve
+          </button>
+          <button type="submit" name="decision" value="deny" class="deny">
+            Deny
+          </button>
+        </div>
+      </form>
+    ))
+  }
+</Base>

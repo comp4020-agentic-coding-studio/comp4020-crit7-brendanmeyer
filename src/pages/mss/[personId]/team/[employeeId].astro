@@ -1,0 +1,60 @@
+---
+import Base from "../../../../layouts/Base.astro";
+import { hoursToDays } from "../../../../lib/leave-hours";
+import { getPerson, isManager, isManagerOf, listRequestsForPerson } from "../../../../lib/db";
+
+const personId = Number(Astro.params.personId);
+const employeeId = Number(Astro.params.employeeId);
+const person = getPerson(personId);
+if (!person) return Astro.redirect("/", 302);
+if (!isManager(person)) return Astro.redirect(`/ess/${person.id}`, 302);
+
+const employee = getPerson(employeeId);
+if (!employee || !isManagerOf(person.id, employee.id)) {
+  return Astro.redirect(`/mss/${person.id}/team`, 302);
+}
+
+const requests = listRequestsForPerson(employee.id);
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "submitted":
+      return "Submitted";
+    case "approved":
+      return "Approved";
+    case "denied":
+      return "Denied";
+    case "cancel_requested":
+      return "Cancel in Progress";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return status;
+  }
+}
+---
+
+<Base title={`${employee.name}'s Absence History`}>
+  <h1>{employee.name}'s Absence History</h1>
+  <p class="hint">{employee.title} · viewed by {person.name}</p>
+
+  {requests.length === 0 && <p class="empty-state">No leave requests on record.</p>}
+  {
+    requests.map((request) => (
+      <div class="list-row">
+        <div class="list-row-main">
+          <div class="list-row-title">{request.leaveType.name}</div>
+          <div class="list-row-meta">
+            {request.startDate} to {request.endDate} · {hoursToDays(request.hoursRequested).toFixed(1)} days
+          </div>
+          {request.cancellationReason && (
+            <div class="list-row-meta">Cancellation reason: {request.cancellationReason}</div>
+          )}
+        </div>
+        <span class={`status-pill status-${request.status}`}>{statusLabel(request.status)}</span>
+      </div>
+    ))
+  }
+
+  <p><a href={`/mss/${person.id}/team`}>Back to my team</a></p>
+</Base>
