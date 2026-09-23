@@ -1,6 +1,5 @@
 ---
 import Base from "../../../../layouts/Base.astro";
-import { hoursToDays } from "../../../../lib/leave-hours";
 import { getPerson, isManager, isManagerOf, listRequestsForPerson } from "../../../../lib/db";
 
 const personId = Number(Astro.params.personId);
@@ -45,7 +44,7 @@ function statusLabel(status: string): string {
         <div class="list-row-main">
           <div class="list-row-title">{request.leaveType.name}</div>
           <div class="list-row-meta">
-            {request.startDate} to {request.endDate} · {hoursToDays(request.hoursRequested).toFixed(1)} days
+            {request.startDate} to {request.endDate} · {request.hoursRequested.toFixed(1)} hours
           </div>
           {request.cancellationReason && (
             <div class="list-row-meta">Cancellation reason: {request.cancellationReason}</div>

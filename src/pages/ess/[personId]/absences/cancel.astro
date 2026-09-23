@@ -1,7 +1,6 @@
 ---
 import Base from "../../../../layouts/Base.astro";
 import { errorMessage } from "../../../../lib/error-messages";
-import { hoursToDays } from "../../../../lib/leave-hours";
 import { getPerson, isManager, listCancellableRequests } from "../../../../lib/db";
 
 const personId = Number(Astro.params.personId);
@@ -35,7 +34,7 @@ const failedReason = Astro.url.searchParams.get("cancellationReason") ?? "";
           {request.leaveType.name} · {request.startDate} to {request.endDate}
         </h2>
         <p class="list-row-meta">
-          {hoursToDays(request.hoursRequested).toFixed(1)} days ·{" "}
+          {request.hoursRequested.toFixed(1)} hours ·{" "}
           <span class={`status-pill status-${request.status}`}>{request.status}</span>
         </p>
         <div class="field">

@@ -1,8 +1,8 @@
 import type { APIRoute } from "astro";
-import { computeHoursRequested, hoursToDays } from "../../../lib/leave-hours";
+import { computeHoursRequested } from "../../../lib/leave-hours";
 
 // Backs the apply-leave form's live "this counts N hours towards your
-// balance" readout. All the business-day/hours arithmetic still lives in
+// balance" readout. The business-day/hours arithmetic still lives in
 // leave-hours.ts — this just wraps it as JSON so the page's script can show
 // the result without duplicating that math client-side.
 export const GET: APIRoute = async ({ url }) => {
@@ -15,9 +15,5 @@ export const GET: APIRoute = async ({ url }) => {
     return Response.json({ ok: false, error: "invalid_range" });
   }
 
-  const result = computeHoursRequested(startDate, endDate, hoursFirstDay, hoursLastDay);
-  if (!result.ok) {
-    return Response.json(result);
-  }
-  return Response.json({ ...result, days: hoursToDays(result.hoursRequested) });
+  return Response.json(computeHoursRequested(startDate, endDate, hoursFirstDay, hoursLastDay));
 };

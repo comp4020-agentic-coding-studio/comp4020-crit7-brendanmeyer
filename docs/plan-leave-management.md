@@ -98,9 +98,11 @@ export const leaveRequests = sqliteTable("leave_requests", {
 });
 ```
 
-Hours are the canonical unit for both balances and requests, so summing
-partial-day hours and dividing once for display avoids repeated float
-rounding. Display always converts hours → days via `/7`.
+Hours are the canonical unit for both balances and requests — and also the
+display unit throughout the UI (balance tiles, request lists, approvals,
+history). Not converting to days keeps the number shown always equal to
+what actually gets debited/credited; a day figure would just be that same
+number divided by 7 for a reader to redo in their head.
 
 Derive "is a manager" from `managerId === null` rather than a stored flag —
 there's exactly one manager in this flat org, so it's one source of truth
@@ -187,10 +189,10 @@ as the user left it rather than resetting it.
 
 The apply form also has one small, deliberate piece of client JS: as the
 user fills in the date/hours fields, it calls `GET /api/leave/preview`
-(a thin wrapper around `computeHoursRequested`/`hoursToDays` — no arithmetic
-duplicated client-side) and shows a prominent `.hours-preview` readout of
-how many hours/days/business-days the request will actually count, before
-they submit. This is the one page where "no client JS" was worth breaking:
+(a thin wrapper around `computeHoursRequested` — no arithmetic duplicated
+client-side) and shows a prominent `.hours-preview` readout of how many
+hours/business-days the request will actually count, before they submit.
+This is the one page where "no client JS" was worth breaking:
 real HORUS calculates duration live the same way, and it's the detail most
 likely to surprise someone unfamiliar with the business-day/partial-hours
 model. It degrades harmlessly with JS off — the readout just never appears,
@@ -232,8 +234,8 @@ double-click or two open tabs can't double-apply a decision. API routes
 (`src/pages/api/leave/submit.ts`, `cancel.ts`, `decide.ts`) are thin
 `POST: APIRoute` wrappers around these, same shape as the starter's
 `api/messages.ts`. `src/pages/api/leave/preview.ts` is a fourth, read-only
-`GET: APIRoute` — it wraps `computeHoursRequested`/`hoursToDays` as JSON for
-the apply form's live readout (see Pages, above) rather than a mutation.
+`GET: APIRoute` — it wraps `computeHoursRequested` as JSON for the apply
+form's live readout (see Pages, above) rather than a mutation.
 
 ## Testing strategy
 

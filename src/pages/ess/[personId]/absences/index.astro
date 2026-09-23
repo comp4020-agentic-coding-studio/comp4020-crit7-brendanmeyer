@@ -1,7 +1,6 @@
 ---
 import Base from "../../../../layouts/Base.astro";
 import { errorMessage } from "../../../../lib/error-messages";
-import { hoursToDays } from "../../../../lib/leave-hours";
 import { getPerson, isManager, listBalances, listLeaveTypes, listRequestsForPerson } from "../../../../lib/db";
 
 const personId = Number(Astro.params.personId);
@@ -137,7 +136,7 @@ function statusLabel(status: string): string {
         <div class="list-row-main">
           <div class="list-row-title">{request.leaveType.name}</div>
           <div class="list-row-meta">
-            {request.startDate} to {request.endDate} · {hoursToDays(request.hoursRequested).toFixed(1)} days
+            {request.startDate} to {request.endDate} · {request.hoursRequested.toFixed(1)} hours
           </div>
           {request.reason && <div class="list-row-meta">Reason: {request.reason}</div>}
         </div>
@@ -182,8 +181,8 @@ function statusLabel(status: string): string {
       if (result.ok) {
         const dayWord = result.businessDays.length === 1 ? "business day" : "business days";
         preview.innerHTML =
-          `<strong>${result.hoursRequested} hour(s)</strong> (${result.days.toFixed(1)} day(s)) ` +
-          `across ${result.businessDays.length} ${dayWord} will count towards your balance.`;
+          `<strong>${result.hoursRequested} hour(s)</strong> across ${result.businessDays.length} ` +
+          `${dayWord} will count towards your balance.`;
       } else {
         preview.textContent = ERROR_MESSAGES[result.error] ?? "";
       }

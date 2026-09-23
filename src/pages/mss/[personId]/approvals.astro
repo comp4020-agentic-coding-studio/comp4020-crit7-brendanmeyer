@@ -1,7 +1,6 @@
 ---
 import Base from "../../../layouts/Base.astro";
 import { errorMessage } from "../../../lib/error-messages";
-import { hoursToDays } from "../../../lib/leave-hours";
 import { getPerson, isManager, listPendingApprovalsForManager } from "../../../lib/db";
 
 const personId = Number(Astro.params.personId);
@@ -28,7 +27,7 @@ const error = errorMessage(Astro.url.searchParams.get("error") ?? undefined);
         <h2>{request.kind === "cancel_absence" ? "Cancel Absence" : "Leave Request"}</h2>
         <p class="list-row-meta">
           {request.person.name} · {request.leaveType.name} · {request.startDate} to {request.endDate} ·{" "}
-          {hoursToDays(request.hoursRequested).toFixed(1)} days
+          {request.hoursRequested.toFixed(1)} hours
         </p>
         {request.reason && <p class="list-row-meta">Reason: {request.reason}</p>}
         {request.cancellationReason && (

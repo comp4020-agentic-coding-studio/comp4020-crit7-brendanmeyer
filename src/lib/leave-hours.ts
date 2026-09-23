@@ -72,8 +72,3 @@ export function computeHoursRequested(
 
   return { ok: true, hoursRequested, businessDays };
 }
-
-/** Hours -> the "N.N days" figure people are shown. */
-export function hoursToDays(hours: number): number {
-  return hours / FULL_DAY_HOURS;
-}

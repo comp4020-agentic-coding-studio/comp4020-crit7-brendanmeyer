@@ -185,7 +185,6 @@ describe("leave preview API", () => {
       ok: true,
       hoursRequested: 35,
       businessDays: ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"],
-      days: 5,
     });
   });
 
