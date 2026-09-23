@@ -263,6 +263,10 @@ button:hover {
   font-weight: 600;
 }
 
+.banner:empty {
+  display: none;
+}
+
 .banner-error {
   background: #fddcdc;
   color: #7a1c1c;

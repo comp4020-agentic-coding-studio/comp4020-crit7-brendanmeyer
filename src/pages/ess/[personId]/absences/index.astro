@@ -70,16 +70,23 @@ function statusLabel(status: string): string {
           <input type="hidden" name={key} value={formValues[key]} />
         ))}
 
-        {confirm === "same_type" && (
+        {confirm === "overlap" && (
           <>
             <p class="banner banner-warning">
               This overlaps your {overlapRequest.leaveType.name} request from {overlapRequest.startDate} to{" "}
-              {overlapRequest.endDate}. To avoid double-counting those days, this request would be adjusted to{" "}
-              <strong>{adjustedHours} hour(s)</strong>, {adjustedStartDate} to {adjustedEndDate}.
+              {overlapRequest.endDate}
+              {overlapCount > 1 && ` (and ${overlapCount - 1} more)`}. To avoid double-counting those days, this
+              request would be adjusted to <strong>{adjustedHours} hour(s)</strong>, {adjustedStartDate} to{" "}
+              {adjustedEndDate}.
             </p>
-            <button type="submit" name="action" value="trim">
-              Submit adjusted request
-            </button>
+            <div class="inline-actions">
+              <button type="submit" name="action" value="trim">
+                Submit adjusted request
+              </button>
+              <button type="submit" name="action" value="as_entered" class="secondary">
+                Submit full amount anyway
+              </button>
+            </div>
           </>
         )}
 
@@ -88,26 +95,33 @@ function statusLabel(status: string): string {
             <p class="banner banner-warning">
               This overlaps your Annual Leave request from {overlapRequest.startDate} to {overlapRequest.endDate}.
               You can replace those overlapping days with Medical Leave instead — the Annual Leave request will
-              shrink or be cancelled, and its balance restored, once a manager approves this Medical Leave request —
-              or submit Medical Leave as entered and leave the Annual Leave request untouched.
+              shrink or be cancelled, and its balance restored, once a manager approves this Medical Leave request.
+              {adjustedHours &&
+                ` Or, if you only want to cover the days not already on leave, just request the extra ${adjustedHours} hour(s) as Medical Leave and leave the Annual Leave request untouched.`}
             </p>
             <div class="inline-actions">
               <button type="submit" name="action" value="replace">
                 Replace those days with Medical Leave
               </button>
+              {adjustedHours && (
+                <button type="submit" name="action" value="trim" class="secondary">
+                  Submit only the extra {adjustedHours}h
+                </button>
+              )}
               <button type="submit" name="action" value="as_entered" class="secondary">
-                Submit as entered (keep both)
+                Submit full amount anyway
               </button>
             </div>
           </>
         )}
 
-        {confirm === "other" && (
+        {confirm === "unresolvable" && (
           <>
             <p class="banner banner-warning">
               This overlaps your {overlapRequest.leaveType.name} request from {overlapRequest.startDate} to{" "}
               {overlapRequest.endDate}
-              {overlapCount > 1 && ` (and ${overlapCount - 1} more)`}. Submit anyway?
+              {overlapCount > 1 && ` (and ${overlapCount - 1} more)`}, in a way that can't be automatically adjusted.
+              Submit the full amount anyway?
             </p>
             <button type="submit" name="action" value="as_entered">
               Submit anyway
@@ -184,6 +198,7 @@ function statusLabel(status: string): string {
     </div>
     <p class="hint">A full work day is 7 hours. Weekends never count towards a request.</p>
     <p class="hours-preview" id="hours-preview" aria-live="polite"></p>
+    <p class="banner banner-warning" id="overlap-preview" aria-live="polite"></p>
     <div class="field">
       <label for="reason">Reason (optional)</label>
       <textarea id="reason" name="reason" rows="2">{formValues.reason}</textarea>
@@ -218,25 +233,32 @@ function statusLabel(status: string): string {
 </Base>
 
 <script>
-  // Live "this counts N hours towards your balance" readout as the user
-  // fills in the form. The arithmetic itself stays server-side
-  // (/api/leave/preview wraps src/lib/leave-hours.ts) — this only fetches
-  // and renders the result, so there's one source of truth for the math.
+  // Live readout as the user fills in the form: how many hours it counts
+  // (unchanged), plus — proactively, before they ever click Submit — a
+  // heads-up if it overlaps their own existing leave. Both come from
+  // /api/leave/preview, which wraps src/lib/leave-hours.ts and
+  // planLeaveSubmission (src/lib/db.ts); this script only fetches and
+  // renders the result; the actual submit still re-checks server-side
+  // regardless, so this is an early warning, not the safety net.
   import { ERROR_MESSAGES } from "../../../../lib/error-messages";
 
   const form = document.querySelector<HTMLFormElement>("#apply-leave-form");
-  const preview = document.querySelector<HTMLParagraphElement>("#hours-preview");
+  const hoursPreview = document.querySelector<HTMLParagraphElement>("#hours-preview");
+  const overlapPreview = document.querySelector<HTMLParagraphElement>("#overlap-preview");
 
-  if (form && preview) {
+  if (form && hoursPreview && overlapPreview) {
+    const personId = form.elements.namedItem("personId") as HTMLInputElement;
+    const leaveTypeId = form.elements.namedItem("leaveTypeId") as HTMLSelectElement;
     const startDate = form.elements.namedItem("startDate") as HTMLInputElement;
     const endDate = form.elements.namedItem("endDate") as HTMLInputElement;
     const hoursFirstDay = form.elements.namedItem("hoursFirstDay") as HTMLInputElement;
     const hoursLastDay = form.elements.namedItem("hoursLastDay") as HTMLInputElement;
-    const fields = [startDate, endDate, hoursFirstDay, hoursLastDay];
+    const fields = [leaveTypeId, startDate, endDate, hoursFirstDay, hoursLastDay];
 
     const update = async () => {
       if (!startDate.value || !endDate.value || !hoursFirstDay.value || !hoursLastDay.value) {
-        preview.textContent = "";
+        hoursPreview.textContent = "";
+        overlapPreview.textContent = "";
         return;
       }
       const query = new URLSearchParams({
@@ -244,16 +266,40 @@ function statusLabel(status: string): string {
         endDate: endDate.value,
         hoursFirstDay: hoursFirstDay.value,
         hoursLastDay: hoursLastDay.value,
+        personId: personId.value,
+        leaveTypeId: leaveTypeId.value,
       });
       const res = await fetch(`/api/leave/preview?${query}`);
       const result = await res.json();
-      if (result.ok) {
-        const dayWord = result.businessDays.length === 1 ? "business day" : "business days";
-        preview.innerHTML =
-          `<strong>${result.hoursRequested} hour(s)</strong> across ${result.businessDays.length} ` +
-          `${dayWord} will count towards your balance.`;
-      } else {
-        preview.textContent = ERROR_MESSAGES[result.error] ?? "";
+
+      if (!result.ok) {
+        hoursPreview.textContent = ERROR_MESSAGES[result.error] ?? "";
+        overlapPreview.textContent = "";
+        return;
+      }
+      const dayWord = result.businessDays.length === 1 ? "business day" : "business days";
+      hoursPreview.innerHTML =
+        `<strong>${result.hoursRequested} hour(s)</strong> across ${result.businessDays.length} ` +
+        `${dayWord} will count towards your balance.`;
+
+      const overlap = result.overlap;
+      if (!overlap) {
+        overlapPreview.textContent = "";
+      } else if (overlap.kind === "invalid") {
+        overlapPreview.textContent = ERROR_MESSAGES[overlap.error] ?? "";
+      } else if (overlap.kind === "fully_covered") {
+        overlapPreview.textContent = ERROR_MESSAGES.fully_covered_by_existing;
+      } else if (overlap.kind === "unresolvable") {
+        overlapPreview.textContent =
+          "This overlaps existing leave in a way that can't be automatically adjusted — you'll be asked to confirm before submitting.";
+      } else if (overlap.kind === "medical_replace_candidate") {
+        overlapPreview.textContent = overlap.adjustedHours
+          ? `This overlaps an existing Annual Leave request — submitting will offer to replace those days with Medical Leave, or just add the extra ${overlap.adjustedHours}h.`
+          : "This overlaps an existing Annual Leave request — submitting will offer to replace those days with Medical Leave.";
+      } else if (overlap.kind === "overlap") {
+        overlapPreview.textContent =
+          `This overlaps existing leave — submitting will offer to adjust this request to ${overlap.adjustedHours}h ` +
+          `(${overlap.adjustedStartDate} to ${overlap.adjustedEndDate}) instead of double-booking those days.`;
       }
     };
 
