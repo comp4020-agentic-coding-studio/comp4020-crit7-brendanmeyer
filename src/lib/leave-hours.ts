@@ -29,6 +29,22 @@ export function businessDaysBetween(startISO: string, endISO: string): string[] 
   return days;
 }
 
+export type DailyHours = { date: string; hours: number };
+
+/**
+ * Per-day hours for an ordered business-day list: partial hours only ever
+ * apply to the first and last day, every day strictly between is a full
+ * FULL_DAY_HOURS day.
+ */
+export function dailyHours(businessDays: string[], hoursFirstDay: number, hoursLastDay: number): DailyHours[] {
+  if (businessDays.length === 0) return [];
+  if (businessDays.length === 1) return [{ date: businessDays[0], hours: hoursFirstDay }];
+  return businessDays.map((date, i) => ({
+    date,
+    hours: i === 0 ? hoursFirstDay : i === businessDays.length - 1 ? hoursLastDay : FULL_DAY_HOURS,
+  }));
+}
+
 export type HoursValidationError = "invalid_range" | "no_business_days" | "invalid_hours";
 
 export type ComputeHoursResult =
@@ -65,10 +81,58 @@ export function computeHoursRequested(
     return { ok: false, error: "no_business_days" };
   }
 
-  const hoursRequested =
-    businessDays.length === 1
-      ? hoursFirstDay
-      : hoursFirstDay + hoursLastDay + FULL_DAY_HOURS * (businessDays.length - 2);
+  const hoursRequested = dailyHours(businessDays, hoursFirstDay, hoursLastDay).reduce(
+    (sum, d) => sum + d.hours,
+    0,
+  );
 
   return { ok: true, hoursRequested, businessDays };
+}
+
+export type ExcludeResult =
+  | { kind: "unchanged" } // exclude range doesn't remove any of these business days
+  | { kind: "fully_covered" } // every business day is excluded
+  | { kind: "trimmed"; businessDays: string[] } // a strict prefix or suffix remains
+  | { kind: "requires_split" }; // remainder has days on both sides — not supported
+
+/**
+ * Removes any date within [excludeStartISO, excludeEndISO] from
+ * businessDays. Only reports "trimmed" when what's left is a contiguous
+ * prefix or suffix of the original ordered list — a middle carve-out
+ * (days remaining on both sides) reports "requires_split" rather than
+ * guessing how to represent a non-contiguous remainder.
+ */
+export function excludeBusinessDays(
+  businessDays: string[],
+  excludeStartISO: string,
+  excludeEndISO: string,
+): ExcludeResult {
+  const remaining = businessDays.filter((d) => d < excludeStartISO || d > excludeEndISO);
+  if (remaining.length === businessDays.length) return { kind: "unchanged" };
+  if (remaining.length === 0) return { kind: "fully_covered" };
+
+  const isPrefix = remaining.every((d, i) => d === businessDays[i]);
+  const isSuffix = remaining.every((d, i) => d === businessDays[businessDays.length - remaining.length + i]);
+  return isPrefix || isSuffix ? { kind: "trimmed", businessDays: remaining } : { kind: "requires_split" };
+}
+
+/**
+ * Turns a contiguous subset of an original request's business days back
+ * into row-shaped fields, using the ORIGINAL per-day hours so a boundary
+ * day that used to be a full "middle" day gets FULL_DAY_HOURS, not a stale
+ * first/last-day value.
+ */
+export function summarizeBusinessDays(
+  subsetBusinessDays: string[],
+  originalDailyHours: DailyHours[],
+): { startDate: string; endDate: string; hoursFirstDay: number; hoursLastDay: number; hoursRequested: number } {
+  const byDate = new Map(originalDailyHours.map((d) => [d.date, d.hours]));
+  const hours = subsetBusinessDays.map((d) => byDate.get(d) ?? 0);
+  return {
+    startDate: subsetBusinessDays[0],
+    endDate: subsetBusinessDays[subsetBusinessDays.length - 1],
+    hoursFirstDay: hours[0],
+    hoursLastDay: hours[hours.length - 1],
+    hoursRequested: hours.reduce((sum, h) => sum + h, 0),
+  };
 }

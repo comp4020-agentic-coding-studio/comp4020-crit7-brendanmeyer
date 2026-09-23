@@ -83,6 +83,15 @@ export const leaveRequests = sqliteTable("leave_requests", {
   createdAt: text("created_at")
     .notNull()
     .default(sql`(datetime('now'))`),
+  // Set only on a Medical Leave request created via the "replace" confirm
+  // action (see src/lib/db.ts's planLeaveSubmission/decideLeaveRequest):
+  // points at the Annual Leave request whose overlapping days should be
+  // excluded, and balance restored, IF this request gets approved.
+  replacesRequestId: int("replaces_request_id").references((): AnySQLiteColumn => leaveRequests.id),
+  // Free text set whenever a request's stored values differ from what the
+  // employee literally typed (overlap trim), or a replace is pending/done —
+  // the "notify the manager" mechanism, surfaced on the approvals/history pages.
+  systemNote: text("system_note"),
 });
 
 export type Person = typeof people.$inferSelect;
