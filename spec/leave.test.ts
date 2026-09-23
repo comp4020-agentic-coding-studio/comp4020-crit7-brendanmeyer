@@ -279,9 +279,11 @@ describe("overlap: same leave type gets trimmed", () => {
     const params = locationParams(res.headers.get("location"));
     expect(params.get("confirm")).toBe("overlap");
     expect(params.get("overlapRequestId")).toBe(String(firstRequestId));
-    expect(params.get("adjustedHours")).toBe("14");
-    expect(params.get("adjustedStartDate")).toBe("2026-11-16");
-    expect(params.get("adjustedEndDate")).toBe("2026-11-17");
+    // The adjusted hours/dates aren't in the redirect itself (an overlap can
+    // split into any number of segments) — the apply page re-derives them
+    // live, checked below via the rendered banner text instead.
+    const banner = await get(res.headers.get("location") ?? "");
+    expect(banner).toContain("14 hour(s), 2026-11-16 to 2026-11-17");
   });
 
   it("confirming the trim creates only the adjusted (smaller) request", async () => {
@@ -497,9 +499,8 @@ describe("overlap: Medical Leave can also just take the extra hours instead of r
     );
     const params = locationParams(medicalRes.headers.get("location"));
     expect(params.get("confirm")).toBe("medical_replace_candidate");
-    expect(params.get("adjustedHours")).toBe("7");
-    expect(params.get("adjustedStartDate")).toBe("2027-02-08");
-    expect(params.get("adjustedEndDate")).toBe("2027-02-08");
+    const banner = await get(medicalRes.headers.get("location") ?? "");
+    expect(banner).toContain("7 hour(s), 2027-02-08 to 2027-02-08");
 
     const confirmRes = await post(
       "/api/leave/submit-confirm",
@@ -551,9 +552,8 @@ describe("overlap: a different, unrelated leave type also gets the difference wo
     // allowed through in full: the difference is worked out generically,
     // the same as the same-leave-type case, regardless of type.
     expect(params.get("confirm")).toBe("overlap");
-    expect(params.get("adjustedHours")).toBe("14");
-    expect(params.get("adjustedStartDate")).toBe("2026-11-18");
-    expect(params.get("adjustedEndDate")).toBe("2026-11-19");
+    const banner = await get(res.headers.get("location") ?? "");
+    expect(banner).toContain("14 hour(s), 2026-11-18 to 2026-11-19");
 
     const confirmRes = await post(
       "/api/leave/submit-confirm",
@@ -574,5 +574,143 @@ describe("overlap: a different, unrelated leave type also gets the difference wo
     expect(html).toContain("Personal/Carer"); // rendered as Personal/Carer&#39;s Leave
     expect(html).toContain("2026-11-18 to 2026-11-19");
     expect(html).toContain("14.0 hours");
+  });
+});
+
+describe("overlap: applying for extra days both before and after something already booked splits into two requests", () => {
+  it("a same-type request that wraps an existing booking becomes two separate submitted requests", async () => {
+    // employeeC already has a small Annual Leave request for just Wed-Thu of
+    // this week; applying for the whole week can't be expressed as trimming
+    // one row down (Mon-Tue and Fri aren't contiguous), so it splits.
+    const smallRes = await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeC),
+        leaveTypeId: "1",
+        startDate: "2027-03-03", // Wednesday
+        endDate: "2027-03-04", // Thursday
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+      }),
+    );
+    expect(smallRes.status).toBe(303);
+    const smallId = extractRequestId(await get(`/ess/${employeeC}/absences/cancel/`));
+    await post(
+      "/api/leave/decide",
+      new URLSearchParams({ managerId: String(manager), requestId: String(smallId), decision: "approve" }),
+    );
+
+    const weekRes = await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeC),
+        leaveTypeId: "1",
+        startDate: "2027-03-01", // Monday
+        endDate: "2027-03-05", // Friday
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+      }),
+    );
+    expect(weekRes.status).toBe(303);
+    const params = locationParams(weekRes.headers.get("location"));
+    expect(params.get("confirm")).toBe("overlap");
+    const banner = await get(weekRes.headers.get("location") ?? "");
+    expect(banner).toContain("2 separate requests");
+    expect(banner).toContain("14h (2027-03-01 to 2027-03-02)");
+    expect(banner).toContain("7h (2027-03-05 to 2027-03-05)");
+
+    const confirmRes = await post(
+      "/api/leave/submit-confirm",
+      new URLSearchParams({
+        personId: String(employeeC),
+        leaveTypeId: "1",
+        startDate: "2027-03-01",
+        endDate: "2027-03-05",
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+        overlapRequestId: params.get("overlapRequestId") ?? "",
+        action: "trim",
+      }),
+    );
+    expect(confirmRes.status).toBe(303);
+
+    const html = await get(`/ess/${employeeC}/absences/`);
+    // The original Wed-Thu booking is completely untouched...
+    expect(html).toContain("2027-03-03 to 2027-03-04");
+    // ...and the new request exists as two independent rows either side of it.
+    expect(html).toContain("2027-03-01 to 2027-03-02");
+    expect(html).toContain("2027-03-05 to 2027-03-05");
+    expect(html).toContain("Part 1 of 2");
+    expect(html).toContain("Part 2 of 2");
+  });
+});
+
+describe("overlap: Medical Leave carving into the middle of an approved Annual Leave request splits it", () => {
+  it("approving a single-day Medical Leave request splits the surrounding Annual Leave into two remaining requests", async () => {
+    const annualRes = await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeA),
+        leaveTypeId: "1",
+        startDate: "2027-04-05", // Monday
+        endDate: "2027-04-09", // Friday
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+      }),
+    );
+    expect(annualRes.status).toBe(303);
+    const annualId = extractRequestId(await get(`/ess/${employeeA}/absences/cancel/`));
+    await post(
+      "/api/leave/decide",
+      new URLSearchParams({ managerId: String(manager), requestId: String(annualId), decision: "approve" }),
+    );
+
+    const medicalRes = await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeA),
+        leaveTypeId: "3",
+        startDate: "2027-04-07", // Wednesday only — the middle of the annual week
+        endDate: "2027-04-07",
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+      }),
+    );
+    const params = locationParams(medicalRes.headers.get("location"));
+    expect(params.get("confirm")).toBe("medical_replace_candidate");
+
+    await post(
+      "/api/leave/submit-confirm",
+      new URLSearchParams({
+        personId: String(employeeA),
+        leaveTypeId: "3",
+        startDate: "2027-04-07",
+        endDate: "2027-04-07",
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+        overlapRequestId: String(annualId),
+        action: "replace",
+      }),
+    );
+
+    const medicalId = extractRequestId(await get(`/ess/${employeeA}/absences/cancel/`));
+    const approveRes = await post(
+      "/api/leave/decide",
+      new URLSearchParams({ managerId: String(manager), requestId: String(medicalId), decision: "approve" }),
+    );
+    expect(approveRes.status).toBe(303);
+
+    const html = await get(`/ess/${employeeA}/absences/`);
+    // The annual request splits: Mon-Tue stays on the original row...
+    expect(html).toContain("2027-04-05 to 2027-04-06");
+    // ...and Thu-Fri becomes a second, independent (already-approved) row.
+    expect(html).toContain("2027-04-08 to 2027-04-09");
+    expect(html).toContain("Part 1 of 2");
+    expect(html).toContain("Part 2 of 2");
+    expect(html).toContain("2027-04-07 to 2027-04-07"); // the medical request itself
+    // Medical: 70h - 7h = 63h. Annual: 70h - 35h (this week's booking) + 7h
+    // (the single Wednesday, restored once the medical request took it over) = 42h.
+    expect(html).toContain("63.0");
+    expect(html).toContain("42.0");
   });
 });
