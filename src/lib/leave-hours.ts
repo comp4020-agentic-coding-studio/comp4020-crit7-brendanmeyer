@@ -96,18 +96,19 @@ export type ExcludeResult =
   | { kind: "requires_split" }; // remainder has days on both sides — not supported
 
 /**
- * Removes any date within [excludeStartISO, excludeEndISO] from
- * businessDays. Only reports "trimmed" when what's left is a contiguous
- * prefix or suffix of the original ordered list — a middle carve-out
- * (days remaining on both sides) reports "requires_split" rather than
- * guessing how to represent a non-contiguous remainder.
+ * Removes every date in excludeDates from businessDays. Only reports
+ * "trimmed" when what's left is a contiguous prefix or suffix of the
+ * original ordered list — a middle carve-out (days remaining on both
+ * sides) reports "requires_split" rather than guessing how to represent a
+ * non-contiguous remainder.
+ *
+ * excludeDates is a set of individual dates rather than a single start/end
+ * range so callers can exclude the UNION of several other requests' days at
+ * once (not just one), which is what lets overlap detection work out the
+ * actual difference instead of falling back to the full entered hours.
  */
-export function excludeBusinessDays(
-  businessDays: string[],
-  excludeStartISO: string,
-  excludeEndISO: string,
-): ExcludeResult {
-  const remaining = businessDays.filter((d) => d < excludeStartISO || d > excludeEndISO);
+export function excludeBusinessDays(businessDays: string[], excludeDates: ReadonlySet<string>): ExcludeResult {
+  const remaining = businessDays.filter((d) => !excludeDates.has(d));
   if (remaining.length === businessDays.length) return { kind: "unchanged" };
   if (remaining.length === 0) return { kind: "fully_covered" };
 

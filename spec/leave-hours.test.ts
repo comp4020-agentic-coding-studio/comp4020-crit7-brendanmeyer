@@ -120,30 +120,40 @@ describe("dailyHours", () => {
 });
 
 describe("excludeBusinessDays", () => {
-  it("reports unchanged when the exclude range doesn't touch the list", () => {
-    expect(excludeBusinessDays(WEEK, "2026-10-01", "2026-10-02")).toEqual({ kind: "unchanged" });
+  it("reports unchanged when none of the excluded dates touch the list", () => {
+    expect(excludeBusinessDays(WEEK, new Set(["2026-10-01", "2026-10-02"]))).toEqual({ kind: "unchanged" });
   });
 
   it("reports fully_covered when every day is excluded", () => {
-    expect(excludeBusinessDays(WEEK, "2026-09-21", "2026-09-25")).toEqual({ kind: "fully_covered" });
+    expect(excludeBusinessDays(WEEK, new Set(WEEK))).toEqual({ kind: "fully_covered" });
   });
 
   it("reports trimmed with the prefix remaining when a suffix is excluded", () => {
-    expect(excludeBusinessDays(WEEK, "2026-09-24", "2026-09-25")).toEqual({
+    expect(excludeBusinessDays(WEEK, new Set(["2026-09-24", "2026-09-25"]))).toEqual({
       kind: "trimmed",
       businessDays: ["2026-09-21", "2026-09-22", "2026-09-23"],
     });
   });
 
   it("reports trimmed with the suffix remaining when a prefix is excluded", () => {
-    expect(excludeBusinessDays(WEEK, "2026-09-21", "2026-09-22")).toEqual({
+    expect(excludeBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-22"]))).toEqual({
       kind: "trimmed",
       businessDays: ["2026-09-23", "2026-09-24", "2026-09-25"],
     });
   });
 
   it("reports requires_split when days remain on both sides", () => {
-    expect(excludeBusinessDays(WEEK, "2026-09-23", "2026-09-23")).toEqual({ kind: "requires_split" });
+    expect(excludeBusinessDays(WEEK, new Set(["2026-09-23"]))).toEqual({ kind: "requires_split" });
+  });
+
+  it("can exclude the union of dates from more than one other request", () => {
+    // Two separate overlapping requests, one covering Monday and one
+    // covering Friday, leave only the middle three days.
+    expect(excludeBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-25"]))).toEqual({ kind: "requires_split" });
+    expect(excludeBusinessDays(WEEK, new Set(["2026-09-24", "2026-09-25"]))).toEqual({
+      kind: "trimmed",
+      businessDays: ["2026-09-21", "2026-09-22", "2026-09-23"],
+    });
   });
 });
 
