@@ -1,11 +1,17 @@
 import type { APIRoute } from "astro";
-import { submitLeaveRequest } from "../../../lib/db";
+import { planLeaveSubmission, submitLeaveRequest } from "../../../lib/db";
 
 // Plain HTML form POST -> redirect -> the submitting tab re-renders from
 // SQLite. Errors travel back as ?error=<code> rather than a response body,
 // since there's no client-side JS reading a response; on failure the
 // submitted field values ride along on the same query string so the page
 // can re-render the form as the user left it instead of resetting it.
+//
+// planLeaveSubmission checks the new request against the employee's own
+// existing active requests BEFORE anything is written. A clean submission
+// (or an invalid one) behaves exactly as before; an overlap redirects back
+// with ?confirm=<kind> instead of writing anything — the employee has to
+// explicitly confirm what happens next (see submit-confirm.ts).
 export const POST: APIRoute = async ({ request, redirect }) => {
   const form = await request.formData();
   const personId = Number(form.get("personId"));
@@ -17,6 +23,39 @@ export const POST: APIRoute = async ({ request, redirect }) => {
   const hoursFirstDay = String(form.get("hoursFirstDay") ?? "");
   const hoursLastDay = String(form.get("hoursLastDay") ?? "");
   const reason = String(form.get("reason") ?? "");
+  const echo = { leaveTypeId, startDate, endDate, hoursFirstDay, hoursLastDay, reason };
+
+  const plan = planLeaveSubmission({
+    personId,
+    leaveTypeId: Number(leaveTypeId),
+    startDate,
+    endDate,
+    hoursFirstDay: Number(hoursFirstDay),
+    hoursLastDay: Number(hoursLastDay),
+  });
+
+  if (plan.kind === "invalid") {
+    return redirect(`${back}?${new URLSearchParams({ error: plan.error, ...echo })}`, 303);
+  }
+
+  // Nothing new to offer: every business day is already booked under the
+  // same leave type. This is a plain error, not something to confirm.
+  if (plan.kind === "same_type_fully_covered") {
+    return redirect(`${back}?${new URLSearchParams({ error: "fully_covered_by_existing", ...echo })}`, 303);
+  }
+
+  if (plan.kind !== "none") {
+    const params = new URLSearchParams({ confirm: plan.kind, overlapRequestId: String(plan.overlapRequestId), ...echo });
+    if (plan.kind === "same_type") {
+      params.set("adjustedHours", String(plan.hoursRequested));
+      params.set("adjustedStartDate", plan.startDate);
+      params.set("adjustedEndDate", plan.endDate);
+    }
+    if (plan.kind === "other") {
+      params.set("overlapCount", String(plan.overlapCount));
+    }
+    return redirect(`${back}?${params}`, 303);
+  }
 
   const result = submitLeaveRequest({
     personId,
@@ -29,16 +68,7 @@ export const POST: APIRoute = async ({ request, redirect }) => {
   });
 
   if (!result.ok) {
-    const params = new URLSearchParams({
-      error: result.error,
-      leaveTypeId,
-      startDate,
-      endDate,
-      hoursFirstDay,
-      hoursLastDay,
-      reason,
-    });
-    return redirect(`${back}?${params}`, 303);
+    return redirect(`${back}?${new URLSearchParams({ error: result.error, ...echo })}`, 303);
   }
   return redirect(back, 303);
 };

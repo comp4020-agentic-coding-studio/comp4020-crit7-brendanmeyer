@@ -1,10 +1,16 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import Database from "better-sqlite3";
-import { and, desc, eq, inArray } from "drizzle-orm";
+import { and, desc, eq, gte, inArray, lte } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
-import { computeHoursRequested } from "./leave-hours";
+import {
+  businessDaysBetween,
+  computeHoursRequested,
+  dailyHours,
+  excludeBusinessDays,
+  summarizeBusinessDays,
+} from "./leave-hours";
 import {
   type LeaveBalance,
   type LeaveRequest,
@@ -195,6 +201,127 @@ export function listPendingApprovalsForManager(managerId: number): PendingApprov
     }));
 }
 
+export function getRequestById(requestId: number): RequestWithType | undefined {
+  const row = db
+    .select({ request: leaveRequests, leaveType: leaveTypes })
+    .from(leaveRequests)
+    .innerJoin(leaveTypes, eq(leaveRequests.leaveTypeId, leaveTypes.id))
+    .where(eq(leaveRequests.id, requestId))
+    .get();
+  return row ? { ...row.request, leaveType: row.leaveType } : undefined;
+}
+
+// A request still consumes/reserves balance (or is on its way to) in any of
+// these statuses — only "denied"/"cancelled" are inert and excluded from
+// overlap detection.
+export const ACTIVE_LEAVE_STATUSES = ["submitted", "approved", "cancel_requested"] as const;
+
+export function listActiveOverlappingRequests(personId: number, startDate: string, endDate: string): RequestWithType[] {
+  return db
+    .select({ request: leaveRequests, leaveType: leaveTypes })
+    .from(leaveRequests)
+    .innerJoin(leaveTypes, eq(leaveRequests.leaveTypeId, leaveTypes.id))
+    .where(
+      and(
+        eq(leaveRequests.personId, personId),
+        inArray(leaveRequests.status, ACTIVE_LEAVE_STATUSES),
+        lte(leaveRequests.startDate, endDate),
+        gte(leaveRequests.endDate, startDate),
+      ),
+    )
+    .orderBy(leaveRequests.id)
+    .all()
+    .map(({ request, leaveType }) => ({ ...request, leaveType }));
+}
+
+// Overlap planning ---------------------------------------------------------
+// Read-only: figures out what a new submission would need to do, before
+// anything gets written. The employee confirms the outcome (see
+// src/pages/api/leave/submit-confirm.ts) before submitLeaveRequest ever runs.
+
+export type LeaveSubmissionPlan =
+  | { kind: "invalid"; error: string }
+  | { kind: "none" }
+  | { kind: "same_type_fully_covered"; overlapRequestId: number }
+  | {
+      kind: "same_type";
+      overlapRequestId: number;
+      startDate: string;
+      endDate: string;
+      hoursFirstDay: number;
+      hoursLastDay: number;
+      hoursRequested: number;
+    }
+  | { kind: "medical_replace_candidate"; overlapRequestId: number }
+  | { kind: "other"; overlapRequestId: number; overlapCount: number };
+
+export function planLeaveSubmission(input: {
+  personId: number;
+  leaveTypeId: number;
+  startDate: string;
+  endDate: string;
+  hoursFirstDay: number;
+  hoursLastDay: number;
+}): LeaveSubmissionPlan {
+  const leaveType = getLeaveType(input.leaveTypeId);
+  if (!leaveType) return { kind: "invalid", error: "invalid_input" };
+
+  const computed = computeHoursRequested(input.startDate, input.endDate, input.hoursFirstDay, input.hoursLastDay);
+  if (!computed.ok) return { kind: "invalid", error: computed.error };
+
+  const overlaps = listActiveOverlappingRequests(input.personId, input.startDate, input.endDate);
+
+  let outcome: LeaveSubmissionPlan;
+  let hoursToCheck = computed.hoursRequested;
+
+  if (overlaps.length === 0) {
+    outcome = { kind: "none" };
+  } else if (overlaps.length > 1) {
+    // Scope cut: more than one simultaneous overlap always falls back to a
+    // plain "submit anyway?" confirmation — no attempt to reconcile several
+    // candidates at once.
+    outcome = { kind: "other", overlapRequestId: overlaps[0].id, overlapCount: overlaps.length };
+  } else {
+    const existing = overlaps[0];
+    if (existing.leaveTypeId === input.leaveTypeId) {
+      const excluded = excludeBusinessDays(computed.businessDays, existing.startDate, existing.endDate);
+      if (excluded.kind === "unchanged") {
+        outcome = { kind: "none" };
+      } else if (excluded.kind === "fully_covered") {
+        outcome = { kind: "same_type_fully_covered", overlapRequestId: existing.id };
+      } else if (excluded.kind === "trimmed") {
+        const original = dailyHours(computed.businessDays, input.hoursFirstDay, input.hoursLastDay);
+        const trimmed = summarizeBusinessDays(excluded.businessDays, original);
+        outcome = { kind: "same_type", overlapRequestId: existing.id, ...trimmed };
+        hoursToCheck = trimmed.hoursRequested;
+      } else {
+        // requires_split: scope cut, see docs/plan-leave-management.md.
+        outcome = { kind: "other", overlapRequestId: existing.id, overlapCount: 1 };
+      }
+    } else if (leaveType.id === SEED_LEAVE_TYPES.medical && existing.leaveTypeId === SEED_LEAVE_TYPES.annual) {
+      const annualDays = businessDaysBetween(existing.startDate, existing.endDate);
+      const excluded = excludeBusinessDays(annualDays, input.startDate, input.endDate);
+      if (excluded.kind === "unchanged") {
+        outcome = { kind: "none" };
+      } else if (excluded.kind === "requires_split") {
+        outcome = { kind: "other", overlapRequestId: existing.id, overlapCount: 1 };
+      } else {
+        outcome = { kind: "medical_replace_candidate", overlapRequestId: existing.id };
+      }
+    } else {
+      outcome = { kind: "other", overlapRequestId: existing.id, overlapCount: 1 };
+    }
+  }
+
+  if (outcome.kind === "same_type_fully_covered") return outcome;
+
+  if (leaveType.accrues) {
+    const balance = listBalances(input.personId).find((b) => b.leaveTypeId === input.leaveTypeId);
+    if ((balance?.balanceHours ?? 0) < hoursToCheck) return { kind: "invalid", error: "insufficient_balance" };
+  }
+  return outcome;
+}
+
 // Writes -----------------------------------------------------------------
 
 export type Result<T> = { ok: true; request: T } | { ok: false; error: string };
@@ -207,6 +334,8 @@ export function submitLeaveRequest(input: {
   hoursFirstDay: number;
   hoursLastDay: number;
   reason?: string;
+  systemNote?: string | null;
+  replacesRequestId?: number | null;
 }): Result<LeaveRequest> {
   const leaveType = getLeaveType(input.leaveTypeId);
   if (!leaveType) return { ok: false, error: "invalid_input" };
@@ -246,6 +375,8 @@ export function submitLeaveRequest(input: {
         hoursRequested: computed.hoursRequested,
         reason: input.reason?.trim() || null,
         status: "submitted",
+        systemNote: input.systemNote?.trim() || null,
+        replacesRequestId: input.replacesRequestId ?? null,
       })
       .returning()
       .get();
@@ -302,22 +433,65 @@ export function decideLeaveRequest(input: {
     const leaveType = tx.select().from(leaveTypes).where(eq(leaveTypes.id, existing.leaveTypeId)).get();
     const decidedAt = new Date().toISOString();
 
-    const adjustBalance = (delta: number) => {
-      if (!leaveType?.accrues) return;
+    // Generalized so the medical-replaces-annual block below can restore
+    // balance for a SECOND request's leave type, not just existing's own.
+    const adjustBalance = (personId: number, leaveTypeId: number, delta: number) => {
       const balance = tx
         .select()
         .from(leaveBalances)
-        .where(
-          and(eq(leaveBalances.personId, existing.personId), eq(leaveBalances.leaveTypeId, existing.leaveTypeId)),
-        )
+        .where(and(eq(leaveBalances.personId, personId), eq(leaveBalances.leaveTypeId, leaveTypeId)))
         .get();
       const available = balance?.balanceHours ?? 0;
       tx.update(leaveBalances)
         .set({ balanceHours: available + delta })
-        .where(
-          and(eq(leaveBalances.personId, existing.personId), eq(leaveBalances.leaveTypeId, existing.leaveTypeId)),
-        )
+        .where(and(eq(leaveBalances.personId, personId), eq(leaveBalances.leaveTypeId, leaveTypeId)))
         .run();
+    };
+
+    // If this medical-leave request replaces an overlapping Annual Leave
+    // request (see planLeaveSubmission), trim/cancel that request and
+    // restore its balance now — deferred to approve-time (not confirm-time)
+    // so a denied medical request leaves the annual request untouched.
+    const applyReplace = () => {
+      if (existing.replacesRequestId == null) return;
+      const annual = tx.select().from(leaveRequests).where(eq(leaveRequests.id, existing.replacesRequestId)).get();
+      if (!annual || (annual.status !== "submitted" && annual.status !== "approved")) return;
+
+      const annualDays = businessDaysBetween(annual.startDate, annual.endDate);
+      const excluded = excludeBusinessDays(annualDays, existing.startDate, existing.endDate);
+
+      if (excluded.kind === "fully_covered") {
+        // Annual Leave always accrues in this org — no accrues check needed.
+        if (annual.status === "approved") adjustBalance(annual.personId, annual.leaveTypeId, annual.hoursRequested);
+        tx.update(leaveRequests)
+          .set({
+            status: "cancelled",
+            cancellationReason: `Replaced by Medical Leave request #${existing.id}, approved by the manager.`,
+          })
+          .where(eq(leaveRequests.id, annual.id))
+          .run();
+      } else if (excluded.kind === "trimmed") {
+        const shrunk = summarizeBusinessDays(
+          excluded.businessDays,
+          dailyHours(annualDays, annual.hoursFirstDay, annual.hoursLastDay),
+        );
+        const restored = annual.hoursRequested - shrunk.hoursRequested;
+        if (annual.status === "approved" && restored > 0) {
+          adjustBalance(annual.personId, annual.leaveTypeId, restored);
+        }
+        tx.update(leaveRequests)
+          .set({
+            ...shrunk,
+            systemNote:
+              `Adjusted: ${restored.toFixed(1)}h excluded — Medical Leave request #${existing.id} ` +
+              `was approved for ${existing.startDate} to ${existing.endDate}. Originally ${annual.startDate} to ${annual.endDate}.`,
+          })
+          .where(eq(leaveRequests.id, annual.id))
+          .run();
+      }
+      // "unchanged"/"requires_split": geometry can't have changed between
+      // confirm and decide, so these are unreachable in the normal flow —
+      // defensively, just skip the annual mutation if we somehow hit them.
     };
 
     if (existing.status === "submitted") {
@@ -343,7 +517,8 @@ export function decideLeaveRequest(input: {
           return { ok: false, error: "insufficient_balance" } as const;
         }
       }
-      adjustBalance(-existing.hoursRequested);
+      if (leaveType?.accrues) adjustBalance(existing.personId, existing.leaveTypeId, -existing.hoursRequested);
+      applyReplace();
 
       const request = tx
         .update(leaveRequests)
@@ -365,7 +540,7 @@ export function decideLeaveRequest(input: {
         return { ok: true, request } as const;
       }
 
-      adjustBalance(existing.hoursRequested);
+      if (leaveType?.accrues) adjustBalance(existing.personId, existing.leaveTypeId, existing.hoursRequested);
 
       const request = tx
         .update(leaveRequests)
