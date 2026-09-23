@@ -49,6 +49,7 @@ function statusLabel(status: string): string {
           {request.cancellationReason && (
             <div class="list-row-meta">Cancellation reason: {request.cancellationReason}</div>
           )}
+          {request.systemNote && <p class="banner banner-info">{request.systemNote}</p>}
         </div>
         <span class={`status-pill status-${request.status}`}>{statusLabel(request.status)}</span>
       </div>

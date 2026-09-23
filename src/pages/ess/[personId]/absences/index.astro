@@ -1,7 +1,7 @@
 ---
 import Base from "../../../../layouts/Base.astro";
 import { errorMessage } from "../../../../lib/error-messages";
-import { getPerson, isManager, listBalances, listLeaveTypes, listRequestsForPerson } from "../../../../lib/db";
+import { getPerson, getRequestById, isManager, listBalances, listLeaveTypes, listRequestsForPerson } from "../../../../lib/db";
 
 const personId = Number(Astro.params.personId);
 const person = getPerson(personId);
@@ -26,6 +26,17 @@ const formValues = {
   reason: params.get("reason") ?? "",
 };
 
+// planLeaveSubmission (src/lib/db.ts) flagged an overlap with an existing
+// request and redirected back here instead of writing anything — the
+// employee has to explicitly confirm what happens next.
+const confirm = params.get("confirm");
+const overlapRequestId = params.get("overlapRequestId");
+const overlapRequest = overlapRequestId ? getRequestById(Number(overlapRequestId)) : undefined;
+const overlapCount = Number(params.get("overlapCount") ?? "1");
+const adjustedHours = params.get("adjustedHours");
+const adjustedStartDate = params.get("adjustedStartDate");
+const adjustedEndDate = params.get("adjustedEndDate");
+
 function statusLabel(status: string): string {
   switch (status) {
     case "submitted":
@@ -49,6 +60,63 @@ function statusLabel(status: string): string {
   <p class="hint">{person.name} · Employee Self Service</p>
 
   {error && <p class="banner banner-error">{error}</p>}
+
+  {
+    confirm && overlapRequest && (
+      <form class="card" method="post" action="/api/leave/submit-confirm">
+        <input type="hidden" name="personId" value={person.id} />
+        <input type="hidden" name="overlapRequestId" value={overlapRequestId} />
+        {(["leaveTypeId", "startDate", "endDate", "hoursFirstDay", "hoursLastDay", "reason"] as const).map((key) => (
+          <input type="hidden" name={key} value={formValues[key]} />
+        ))}
+
+        {confirm === "same_type" && (
+          <>
+            <p class="banner banner-warning">
+              This overlaps your {overlapRequest.leaveType.name} request from {overlapRequest.startDate} to{" "}
+              {overlapRequest.endDate}. To avoid double-counting those days, this request would be adjusted to{" "}
+              <strong>{adjustedHours} hour(s)</strong>, {adjustedStartDate} to {adjustedEndDate}.
+            </p>
+            <button type="submit" name="action" value="trim">
+              Submit adjusted request
+            </button>
+          </>
+        )}
+
+        {confirm === "medical_replace_candidate" && (
+          <>
+            <p class="banner banner-warning">
+              This overlaps your Annual Leave request from {overlapRequest.startDate} to {overlapRequest.endDate}.
+              You can replace those overlapping days with Medical Leave instead — the Annual Leave request will
+              shrink or be cancelled, and its balance restored, once a manager approves this Medical Leave request —
+              or submit Medical Leave as entered and leave the Annual Leave request untouched.
+            </p>
+            <div class="inline-actions">
+              <button type="submit" name="action" value="replace">
+                Replace those days with Medical Leave
+              </button>
+              <button type="submit" name="action" value="as_entered" class="secondary">
+                Submit as entered (keep both)
+              </button>
+            </div>
+          </>
+        )}
+
+        {confirm === "other" && (
+          <>
+            <p class="banner banner-warning">
+              This overlaps your {overlapRequest.leaveType.name} request from {overlapRequest.startDate} to{" "}
+              {overlapRequest.endDate}
+              {overlapCount > 1 && ` (and ${overlapCount - 1} more)`}. Submit anyway?
+            </p>
+            <button type="submit" name="action" value="as_entered">
+              Submit anyway
+            </button>
+          </>
+        )}
+      </form>
+    )
+  }
 
   <div class="balance-grid">
     {
@@ -139,6 +207,7 @@ function statusLabel(status: string): string {
             {request.startDate} to {request.endDate} · {request.hoursRequested.toFixed(1)} hours
           </div>
           {request.reason && <div class="list-row-meta">Reason: {request.reason}</div>}
+          {request.systemNote && <p class="banner banner-info">{request.systemNote}</p>}
         </div>
         <span class={`status-pill status-${request.status}`}>{statusLabel(request.status)}</span>
       </div>

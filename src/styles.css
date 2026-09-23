@@ -269,6 +269,18 @@ button:hover {
   border: 1px solid #f0b4b4;
 }
 
+.banner-warning {
+  background: #fff4cc;
+  color: #6b5300;
+  border: 1px solid #f0d98c;
+}
+
+.banner-info {
+  background: #e8effc;
+  color: #1c3d7a;
+  border: 1px solid #b9cdf2;
+}
+
 .empty-state {
   color: #55555b;
   font-style: italic;

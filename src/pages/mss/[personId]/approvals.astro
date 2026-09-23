@@ -33,6 +33,7 @@ const error = errorMessage(Astro.url.searchParams.get("error") ?? undefined);
         {request.cancellationReason && (
           <p class="list-row-meta">Cancellation reason: {request.cancellationReason}</p>
         )}
+        {request.systemNote && <p class="banner banner-info">{request.systemNote}</p>}
         <div class="inline-actions">
           <button type="submit" name="decision" value="approve">
             Approve
