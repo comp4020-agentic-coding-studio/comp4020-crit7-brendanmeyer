@@ -185,7 +185,7 @@ function statusLabel(status: string): string {
     </div>
     <div class="field-row">
       <div class="field">
-        <label for="hoursFirstDay">Hours on first day</label>
+        <label for="hoursFirstDay" id="hoursFirstDayLabel">Hours on first day</label>
         <input
           id="hoursFirstDay"
           name="hoursFirstDay"
@@ -197,7 +197,7 @@ function statusLabel(status: string): string {
           required
         />
       </div>
-      <div class="field">
+      <div class="field" id="hoursLastDayField">
         <label for="hoursLastDay">Hours on last day</label>
         <input
           id="hoursLastDay"
@@ -260,8 +260,10 @@ function statusLabel(status: string): string {
   const form = document.querySelector<HTMLFormElement>("#apply-leave-form");
   const hoursPreview = document.querySelector<HTMLParagraphElement>("#hours-preview");
   const overlapPreview = document.querySelector<HTMLParagraphElement>("#overlap-preview");
+  const hoursLastDayField = document.querySelector<HTMLElement>("#hoursLastDayField");
+  const hoursFirstDayLabel = document.querySelector<HTMLLabelElement>("#hoursFirstDayLabel");
 
-  if (form && hoursPreview && overlapPreview) {
+  if (form && hoursPreview && overlapPreview && hoursLastDayField && hoursFirstDayLabel) {
     const personId = form.elements.namedItem("personId") as HTMLInputElement;
     const leaveTypeId = form.elements.namedItem("leaveTypeId") as HTMLSelectElement;
     const startDate = form.elements.namedItem("startDate") as HTMLInputElement;
@@ -269,6 +271,20 @@ function statusLabel(status: string): string {
     const hoursFirstDay = form.elements.namedItem("hoursFirstDay") as HTMLInputElement;
     const hoursLastDay = form.elements.namedItem("hoursLastDay") as HTMLInputElement;
     const fields = [leaveTypeId, startDate, endDate, hoursFirstDay, hoursLastDay];
+
+    // A single-day request only ever uses hoursFirstDay (see
+    // computeHoursRequested), so showing a second selector for the same day
+    // is just confusing — hide it and keep it mirroring the first value.
+    const syncSingleDay = () => {
+      const singleDay = startDate.value !== "" && startDate.value === endDate.value;
+      hoursLastDayField.hidden = singleDay;
+      hoursFirstDayLabel.textContent = singleDay ? "Hours" : "Hours on first day";
+      if (singleDay) hoursLastDay.value = hoursFirstDay.value;
+    };
+    startDate.addEventListener("input", syncSingleDay);
+    endDate.addEventListener("input", syncSingleDay);
+    hoursFirstDay.addEventListener("input", syncSingleDay);
+    syncSingleDay();
 
     const update = async () => {
       if (!startDate.value || !endDate.value || !hoursFirstDay.value || !hoursLastDay.value) {
