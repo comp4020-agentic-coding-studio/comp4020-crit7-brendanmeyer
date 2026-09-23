@@ -279,25 +279,35 @@ planLeaveSubmission(input): LeaveSubmissionPlan
 Working out the difference used to be same-type-only, and a "middle
 carve-out" (extra days both before and after an existing booking) used to
 be an unhandled dead end. Both are now just the normal case: `"overlap"` is
-the generic fallback for *any* overlap, and the day-level math always
-produces however many contiguous segments the remainder actually breaks
-into, rather than giving up when it isn't exactly one.
+the generic fallback for *any* overlap, and the math always produces
+however many contiguous segments the remainder actually breaks into,
+rather than giving up when it isn't exactly one.
 
-Three pure helpers in `leave-hours.ts` do the actual day-level arithmetic:
-`dailyHours(businessDays, hoursFirstDay, hoursLastDay)` (computeHoursRequested's
-per-day breakdown, shared rather than duplicated),
-`splitBusinessDays(businessDays, excludeDates: ReadonlySet<string>)` (walks
-the list and breaks it at every excluded date, returning however many
-contiguous runs remain — `[]` if everything was excluded, one run for a
-clean prefix/suffix/single-block trim, two or more for a carve-out; takes a
-*set* of individual dates, not a single start/end range, so the planner can
-exclude the union of several overlapping requests' days at once), and
-`summarizeBusinessDays(subsetDays, originalDailyHours)` (turns one
-contiguous run back into row-shaped start/end/hours fields, using each
-day's own original hours rather than reapplying stale first/last-day
-values). One run per `TrimmedRequest` segment; `submitLeaveRequestSegments`
-(db.ts) inserts however many rows that turns out to be, in one transaction
-with one balance check against their combined total.
+The math works in **hours per day, not just whether a day is touched at
+all** — a day that's only partially used by an existing request (e.g. an
+approved 4h Medical Leave day) still offers the remaining hours, instead of
+the whole day being treated as blocked. Three pure helpers in
+`leave-hours.ts`: `dailyHours(businessDays, hoursFirstDay, hoursLastDay)`
+(computeHoursRequested's per-day breakdown, shared rather than
+duplicated), `usedHoursByDate(requests)` (sums, per calendar date, the
+hours a set of existing requests already consume — a day none of them
+touch is simply absent), and `capToAvailableHours(daily, usedHoursByDate)`
+(fits a request's own per-day hours into whatever's left: a day with
+nothing left is dropped, a day with *some* usage is capped to what remains
+and always becomes its own single-day segment — it can never be a full
+"every day in the middle is 7h" day of a longer one — and a day with
+nothing used continues whichever run is being built, at its own
+originally-requested hours). This is a strict generalization of "exclude
+the whole day or keep it" (that's just this with every day's usage at
+exactly 0 or exactly `FULL_DAY_HOURS`, never in between), and it's what
+lets topping up an existing partial-day request (4h approved, wants the
+remaining 3h) work as a new, separate request instead of being blocked
+outright or silently discarding the still-available hours.
+`summarizeDailyHours(daily)` turns one resulting segment back into
+row-shaped start/end/hours fields. One segment per `TrimmedRequest`;
+`submitLeaveRequestSegments` (db.ts) inserts however many rows that turns
+into, in one transaction with one balance check against their combined
+total.
 
 **No overlap outcome writes anything by itself.** `submit.ts` redirects
 back to the apply page with `?confirm=<kind>&overlapRequestId=...&<echoed
@@ -330,10 +340,11 @@ only ever happens inside `decideLeaveRequest`, when the manager approves
 the Medical Leave request** — never at employee-confirm time. The confirm
 step just records `replacesRequestId` on the new Medical request;
 approving it is what triggers `decideLeaveRequest` to look up that
-request, exclude the now-approved medical dates from its own business
-days, and either cancel it outright (nothing left), update it in place
-(one run left — recomputing its start/end/hours from its own original
-per-day hours), or update it in place for the *first* remaining run and
+request, cap its own per-day hours against however many hours the
+now-approved medical request uses on each of its days, and either cancel
+it outright (nothing left), update it in place (one segment left —
+recomputing its start/end/hours from its own original per-day hours), or
+update it in place for the *first* remaining segment and
 insert additional rows (cloned from the original's personId/leaveTypeId/
 status/decidedBy/decidedAt) for any further ones — the same "however many
 segments this turns into" logic as the submit side, just applied to the
@@ -391,10 +402,12 @@ files, for two different things:
   overlap field itself, checked directly for a fully-covered case; a
   same-type request that wraps an existing booking (extra days both before
   *and* after) splitting into two independent submitted requests while the
-  original stays untouched; and the symmetric decide-time case — approving
-  a single-day Medical Leave request that carves into the *middle* of an
+  original stays untouched; the symmetric decide-time case — approving a
+  single-day Medical Leave request that carves into the *middle* of an
   approved Annual Leave week, splitting it into two remaining approved
-  requests with the excluded day's hours restored to balance.
+  requests with the excluded day's hours restored to balance; and topping
+  up an approved 4h Medical Leave day to a full day, which is capped to the
+  3h still available on that day rather than blocked or double-counted.
 
 `invariants.test.ts` (via the routes added to `spec/routes.ts`) proves the
 *pages* meet the platform's structural and accessibility floor;

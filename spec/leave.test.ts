@@ -714,3 +714,69 @@ describe("overlap: Medical Leave carving into the middle of an approved Annual L
     expect(html).toContain("42.0");
   });
 });
+
+describe("overlap: topping up a partial day to the hours still available", () => {
+  it("extending an approved 4h Medical Leave day to a full day is capped to the remaining 3h", async () => {
+    const firstRes = await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeB),
+        leaveTypeId: "3",
+        startDate: "2027-05-03", // Monday
+        endDate: "2027-05-03",
+        hoursFirstDay: "4",
+        hoursLastDay: "4",
+      }),
+    );
+    expect(firstRes.status).toBe(303);
+    const firstId = extractRequestId(await get(`/ess/${employeeB}/absences/cancel/`));
+    await post(
+      "/api/leave/decide",
+      new URLSearchParams({ managerId: String(manager), requestId: String(firstId), decision: "approve" }),
+    );
+
+    // Asking for the full 7h on that same day should be capped to the 3h
+    // still available (7h - 4h already approved), not blocked outright.
+    const secondRes = await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeB),
+        leaveTypeId: "3",
+        startDate: "2027-05-03",
+        endDate: "2027-05-03",
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+      }),
+    );
+    expect(secondRes.status).toBe(303);
+    const params = locationParams(secondRes.headers.get("location"));
+    expect(params.get("confirm")).toBe("overlap");
+    const banner = await get(secondRes.headers.get("location") ?? "");
+    expect(banner).toContain("3 hour(s), 2027-05-03 to 2027-05-03");
+
+    const confirmRes = await post(
+      "/api/leave/submit-confirm",
+      new URLSearchParams({
+        personId: String(employeeB),
+        leaveTypeId: "3",
+        startDate: "2027-05-03",
+        endDate: "2027-05-03",
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+        overlapRequestId: params.get("overlapRequestId") ?? "",
+        action: "trim",
+      }),
+    );
+    expect(confirmRes.status).toBe(303);
+
+    const secondId = extractRequestId(await get(`/ess/${employeeB}/absences/cancel/`));
+    await post(
+      "/api/leave/decide",
+      new URLSearchParams({ managerId: String(manager), requestId: String(secondId), decision: "approve" }),
+    );
+
+    const html = await get(`/ess/${employeeB}/absences/`);
+    expect(html).toContain("3.0 hours");
+    expect(html).toContain("63.0"); // 70h - 4h - 3h = 63h, the two requests together make up the full day
+  });
+});

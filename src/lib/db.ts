@@ -6,10 +6,11 @@ import { drizzle } from "drizzle-orm/better-sqlite3";
 import { migrate } from "drizzle-orm/better-sqlite3/migrator";
 import {
   businessDaysBetween,
+  capToAvailableHours,
   computeHoursRequested,
   dailyHours,
-  splitBusinessDays,
-  summarizeBusinessDays,
+  summarizeDailyHours,
+  usedHoursByDate,
 } from "./leave-hours";
 import {
   type LeaveBalance,
@@ -294,6 +295,7 @@ export function planLeaveSubmission(input: {
   if (overlaps.length === 0) return checkBalance({ kind: "none" }, computed.hoursRequested);
 
   const original = dailyHours(computed.businessDays, input.hoursFirstDay, input.hoursLastDay);
+  const originalTotalHours = original.reduce((sum, d) => sum + d.hours, 0);
 
   // Medical Leave replacing a single overlapping Annual Leave request is
   // always offered, even when the new request's range fully consumes the
@@ -301,31 +303,34 @@ export function planLeaveSubmission(input: {
   // checked before the generic difference below, not instead of it.
   if (overlaps.length === 1 && leaveType.id === SEED_LEAVE_TYPES.medical && overlaps[0].leaveTypeId === SEED_LEAVE_TYPES.annual) {
     const annual = overlaps[0];
-    const annualDays = new Set(businessDaysBetween(annual.startDate, annual.endDate));
-    const runs = splitBusinessDays(computed.businessDays, annualDays);
-    const segments = runs.length > 0 ? runs.map((run) => summarizeBusinessDays(run, original)) : undefined;
+    const capped = capToAvailableHours(original, usedHoursByDate([annual]));
+    const segments = capped.length > 0 ? capped.map(summarizeDailyHours) : undefined;
     // Checked against the full entered hours (a safe upper bound: the
     // trimmed alternative is always <=): submitLeaveRequest re-validates
     // whichever amount is actually chosen at write time regardless.
     return checkBalance({ kind: "medical_replace_candidate", overlapRequestId: annual.id, segments }, computed.hoursRequested);
   }
 
-  // Generic case: work out the difference against the UNION of every
-  // overlapping request's business days, regardless of leave type — so an
-  // overlap never just falls back to "continue with the full hours" when a
-  // clean adjustment is actually possible. Splitting into multiple requests
-  // (rather than giving up) is what handles applying for extra days both
-  // before and after something already booked.
-  const excludeDates = new Set(overlaps.flatMap((o) => businessDaysBetween(o.startDate, o.endDate)));
-  const runs = splitBusinessDays(computed.businessDays, excludeDates);
+  // Generic case: work out the difference against however many hours the
+  // UNION of every overlapping request's days already uses — not just
+  // whether a day is touched at all — so a day that's only partially used
+  // (e.g. an approved 4h Medical Leave day) still offers the remaining
+  // hours instead of blocking the whole day. An overlap never just falls
+  // back to "continue with the full hours" when a clean adjustment is
+  // possible, and splitting into multiple requests (rather than giving up)
+  // is what handles applying for extra days both before and after
+  // something already booked.
+  const used = usedHoursByDate(overlaps);
+  const capped = capToAvailableHours(original, used);
   const overlapRequestId = overlaps[0].id;
   const overlapCount = overlaps.length;
 
-  const remainingDayCount = runs.reduce((sum, run) => sum + run.length, 0);
-  if (remainingDayCount === computed.businessDays.length) return checkBalance({ kind: "none" }, computed.hoursRequested);
-  if (runs.length === 0) return { kind: "fully_covered" };
+  const cappedTotalHours = capped.reduce((sum, seg) => sum + seg.reduce((s, d) => s + d.hours, 0), 0);
+  const unchanged = capped.length === 1 && capped[0].length === original.length && cappedTotalHours === originalTotalHours;
+  if (unchanged) return checkBalance({ kind: "none" }, computed.hoursRequested);
+  if (capped.length === 0) return { kind: "fully_covered" };
 
-  const segments = runs.map((run) => summarizeBusinessDays(run, original));
+  const segments = capped.map(summarizeDailyHours);
   const totalHours = segments.reduce((sum, s) => sum + s.hoursRequested, 0);
   return checkBalance({ kind: "overlap", overlapRequestId, overlapCount, segments }, totalHours);
 }
@@ -535,8 +540,8 @@ export function decideLeaveRequest(input: {
 
       const annualDays = businessDaysBetween(annual.startDate, annual.endDate);
       const annualDaily = dailyHours(annualDays, annual.hoursFirstDay, annual.hoursLastDay);
-      const runs = splitBusinessDays(annualDays, new Set(businessDaysBetween(existing.startDate, existing.endDate)));
-      const segments = runs.map((run) => summarizeBusinessDays(run, annualDaily));
+      const capped = capToAvailableHours(annualDaily, usedHoursByDate([existing]));
+      const segments = capped.map(summarizeDailyHours);
       const restored = annual.hoursRequested - segments.reduce((sum, s) => sum + s.hoursRequested, 0);
 
       // Annual Leave always accrues in this org — no accrues check needed.
