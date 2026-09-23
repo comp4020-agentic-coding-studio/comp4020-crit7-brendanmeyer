@@ -35,6 +35,12 @@ the same change if a design decision it documents changes.
   viewport, title, the `<nav>` landmark) so the structural/accessibility
   floor `spec/invariants.test.ts` checks — one `<h1>`, a nav landmark, alt
   text, zero axe violations — can't drift as pages are added.
+- A request that *replaces* another (currently: Medical Leave overlapping
+  Annual Leave) only ever mutates the replaced request inside
+  `decideLeaveRequest`, at the moment the manager approves — never at
+  employee-confirm time. Confirming just records `replacesRequestId`; see
+  `docs/plan-leave-management.md`'s "Overlap detection" section for why
+  (a denied replacement must leave the original request untouched).
 
 ## Process
 

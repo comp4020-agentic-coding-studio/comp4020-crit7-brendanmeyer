@@ -164,7 +164,7 @@ structural invariants can't drift as pages are added.
 |---|---|---|
 | `/` | "Absence Management" | tile grid, one tile per person, ESS or MSS link depending on `managerId === null` |
 | `/ess/[personId]` | person's name | "Absences" tile → real link; inert decorative tiles (Payslips, Personal Details) for PeopleSoft flavour |
-| `/ess/[personId]/absences` | "Manage Absences" | balance tiles (**hours**, matching the unit the balance is actually tracked and checked in), apply-absence form with a live hours-counted-towards-balance readout, request list with status badges, `?error=` banner |
+| `/ess/[personId]/absences` | "Manage Absences" | balance tiles (**hours**, matching the unit the balance is actually tracked and checked in), apply-absence form with a live hours-counted-towards-balance readout, an overlap confirm banner when `planLeaveSubmission` flags one, request list with status badges/`systemNote`, `?error=` banner |
 | `/ess/[personId]/absences/cancel` | "Cancel Absences" | one form per cancellable request (`submitted` or `approved`), mandatory reason |
 | `/mss/[personId]` | "Manager Self Service" | Approvals + My Team tiles |
 | `/mss/[personId]/approvals` | "Pending Approvals" | one form per pending row (leave requests **and** cancel requests, labelled distinctly), two named submit buttons |
@@ -237,6 +237,75 @@ double-click or two open tabs can't double-apply a decision. API routes
 `GET: APIRoute` — it wraps `computeHoursRequested` as JSON for the apply
 form's live readout (see Pages, above) rather than a mutation.
 
+## Overlap detection and the Annual→Medical replacement
+
+A later addition: submitting a new request that overlaps one of the
+employee's own existing active requests (`submitted`, `approved`, or
+`cancel_requested` — not `denied`/`cancelled`) is detected and handled
+before anything is written, via a new read-only planner:
+
+```ts
+planLeaveSubmission(input): LeaveSubmissionPlan
+// "invalid"                    -> same validation/balance errors as before
+// "none"                       -> no overlap; submit exactly as entered
+// "same_type_fully_covered"    -> every business day already booked under this type: plain error
+// "same_type"                  -> trims the new request to the hours NOT already
+//                                 covered by an existing same-type request
+// "medical_replace_candidate"  -> new request is Medical Leave overlapping an
+//                                 existing Annual Leave request — offers to convert
+//                                 the overlapping days
+// "other"                      -> any other overlap (different types, >1 overlap,
+//                                 or a "middle carve-out" — see scope cuts below):
+//                                 plain "submit anyway?" confirmation
+```
+
+Two pure helpers in `leave-hours.ts` do the actual day-level arithmetic,
+shared by both directions (trimming the *new* request against an existing
+one, or trimming the *existing Annual* request against a *new* Medical
+one): `excludeBusinessDays(businessDays, excludeStartISO, excludeEndISO)`
+(reports `unchanged` / `fully_covered` / `trimmed` / `requires_split`) and
+`summarizeBusinessDays(subsetDays, originalDailyHours)` (turns a contiguous
+remaining subset back into row-shaped start/end/hours fields, using each
+day's own original hours rather than reapplying stale first/last-day
+values). `computeHoursRequested` itself was refactored to share a new
+`dailyHours(businessDays, hoursFirstDay, hoursLastDay)` per-day breakdown
+rather than duplicating the first/last/middle-day logic a second time.
+
+**No overlap outcome writes anything by itself.** `submit.ts` redirects
+back to the apply page with `?confirm=<kind>&overlapRequestId=...&<echoed
+form fields>` (same query-string round-trip already used for the "keep my
+values on failure" behaviour) instead of calling `submitLeaveRequest`. The
+employee sees one of three confirm banners and picks an action; a new
+`POST /api/leave/submit-confirm` route re-runs `planLeaveSubmission` fresh
+(never trusting anything computed at render time) and only then writes.
+
+**The Annual Leave trim/cancel + balance restore for a replacement only
+ever happens inside `decideLeaveRequest`, when the manager approves the
+Medical Leave request** — never at employee-confirm time. The confirm step
+just records `replacesRequestId` on the new Medical request; approving it
+is what triggers `decideLeaveRequest` to look up that request, exclude the
+now-approved medical dates from it, and either shrink it (recomputing its
+start/end/hours from its own original per-day hours) or cancel it outright
+if nothing is left, restoring balance only for whatever was actually
+excluded. This ordering is deliberate: mutating the annual request earlier
+(at confirm-time) would mean a manager who then *denies* the medical
+request has already cost the employee their approved annual leave for
+nothing. `leaveRequests` gained two nullable columns for this:
+`replacesRequestId` (self-FK, set only on the replacement medical request)
+and `systemNote` (free text — the actual "notify the manager" mechanism,
+rendered on the approvals card and the history/absences views since there's
+no real notification channel by design).
+
+**Scope cuts, deliberately**: more than one simultaneous overlapping
+request always falls back to the plain "other, submit anyway?" path; a
+"middle carve-out" (the exclusion leaves days on *both* sides, so the
+remainder isn't one contiguous run) always falls back to "other" rather
+than splitting a request into two rows — realistic common cases (booking
+over the start/end of an existing period) are prefixes/suffixes, and
+handling a non-contiguous remainder would mean every read helper could no
+longer assume one row is one contiguous date range. Only Medical-over-Annual
+ever offers "replace" — no other leave-type pairing does.
+
 ## Testing strategy
 
 The brief itself sets no automated-test bar — grading is against the live
@@ -257,7 +326,13 @@ files, for two different things:
   approve → balance decrements → cancel → manager sees "Cancel Absence" →
   approve the cancellation → balance restored → history retains the
   cancelled entry, plus two negative-path cases (insufficient balance,
-  no business days in range).
+  no business days in range). Also covers the overlap/replacement addition:
+  a same-type overlap trimmed and confirmed; a Medical Leave replacement of
+  an already-**approved** Annual Leave request, confirmed and then
+  **approved**, checking both balances and the shrunk annual request; the
+  same replacement flow but **denied** instead — the regression test for
+  "a denied replacement must leave the original request untouched"; and a
+  plain cross-type overlap submitted as entered.
 
 `invariants.test.ts` (via the routes added to `spec/routes.ts`) proves the
 *pages* meet the platform's structural and accessibility floor;
