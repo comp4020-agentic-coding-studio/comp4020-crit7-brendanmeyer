@@ -89,32 +89,33 @@ export function computeHoursRequested(
   return { ok: true, hoursRequested, businessDays };
 }
 
-export type ExcludeResult =
-  | { kind: "unchanged" } // exclude range doesn't remove any of these business days
-  | { kind: "fully_covered" } // every business day is excluded
-  | { kind: "trimmed"; businessDays: string[] } // a strict prefix or suffix remains
-  | { kind: "requires_split" }; // remainder has days on both sides — not supported
-
 /**
- * Removes every date in excludeDates from businessDays. Only reports
- * "trimmed" when what's left is a contiguous prefix or suffix of the
- * original ordered list — a middle carve-out (days remaining on both
- * sides) reports "requires_split" rather than guessing how to represent a
- * non-contiguous remainder.
+ * Removes every date in excludeDates from businessDays, returning whatever
+ * remains as however many contiguous runs it breaks into: [] if everything
+ * was excluded, one run if it's a clean prefix/suffix/single-block trim,
+ * two or more if the exclusion carves out the middle (or several separate
+ * excluded stretches) — each run is still just as representable as a single
+ * leave request, so a carve-out becomes several requests rather than a
+ * dead end.
  *
  * excludeDates is a set of individual dates rather than a single start/end
  * range so callers can exclude the UNION of several other requests' days at
  * once (not just one), which is what lets overlap detection work out the
  * actual difference instead of falling back to the full entered hours.
  */
-export function excludeBusinessDays(businessDays: string[], excludeDates: ReadonlySet<string>): ExcludeResult {
-  const remaining = businessDays.filter((d) => !excludeDates.has(d));
-  if (remaining.length === businessDays.length) return { kind: "unchanged" };
-  if (remaining.length === 0) return { kind: "fully_covered" };
-
-  const isPrefix = remaining.every((d, i) => d === businessDays[i]);
-  const isSuffix = remaining.every((d, i) => d === businessDays[businessDays.length - remaining.length + i]);
-  return isPrefix || isSuffix ? { kind: "trimmed", businessDays: remaining } : { kind: "requires_split" };
+export function splitBusinessDays(businessDays: string[], excludeDates: ReadonlySet<string>): string[][] {
+  const runs: string[][] = [];
+  let current: string[] = [];
+  for (const day of businessDays) {
+    if (excludeDates.has(day)) {
+      if (current.length > 0) runs.push(current);
+      current = [];
+    } else {
+      current.push(day);
+    }
+  }
+  if (current.length > 0) runs.push(current);
+  return runs;
 }
 
 /**

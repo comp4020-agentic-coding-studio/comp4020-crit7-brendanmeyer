@@ -3,7 +3,7 @@ import {
   businessDaysBetween,
   computeHoursRequested,
   dailyHours,
-  excludeBusinessDays,
+  splitBusinessDays,
   summarizeBusinessDays,
 } from "../src/lib/leave-hours";
 
@@ -119,41 +119,48 @@ describe("dailyHours", () => {
   });
 });
 
-describe("excludeBusinessDays", () => {
-  it("reports unchanged when none of the excluded dates touch the list", () => {
-    expect(excludeBusinessDays(WEEK, new Set(["2026-10-01", "2026-10-02"]))).toEqual({ kind: "unchanged" });
+describe("splitBusinessDays", () => {
+  it("returns the original list untouched as one run when nothing is excluded", () => {
+    expect(splitBusinessDays(WEEK, new Set(["2026-10-01", "2026-10-02"]))).toEqual([WEEK]);
   });
 
-  it("reports fully_covered when every day is excluded", () => {
-    expect(excludeBusinessDays(WEEK, new Set(WEEK))).toEqual({ kind: "fully_covered" });
+  it("returns no runs when every day is excluded", () => {
+    expect(splitBusinessDays(WEEK, new Set(WEEK))).toEqual([]);
   });
 
-  it("reports trimmed with the prefix remaining when a suffix is excluded", () => {
-    expect(excludeBusinessDays(WEEK, new Set(["2026-09-24", "2026-09-25"]))).toEqual({
-      kind: "trimmed",
-      businessDays: ["2026-09-21", "2026-09-22", "2026-09-23"],
-    });
+  it("returns one run — the prefix — when a suffix is excluded", () => {
+    expect(splitBusinessDays(WEEK, new Set(["2026-09-24", "2026-09-25"]))).toEqual([
+      ["2026-09-21", "2026-09-22", "2026-09-23"],
+    ]);
   });
 
-  it("reports trimmed with the suffix remaining when a prefix is excluded", () => {
-    expect(excludeBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-22"]))).toEqual({
-      kind: "trimmed",
-      businessDays: ["2026-09-23", "2026-09-24", "2026-09-25"],
-    });
+  it("returns one run — the suffix — when a prefix is excluded", () => {
+    expect(splitBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-22"]))).toEqual([
+      ["2026-09-23", "2026-09-24", "2026-09-25"],
+    ]);
   });
 
-  it("reports requires_split when days remain on both sides", () => {
-    expect(excludeBusinessDays(WEEK, new Set(["2026-09-23"]))).toEqual({ kind: "requires_split" });
+  it("splits into two runs when a middle day is excluded (extra days before AND after)", () => {
+    // e.g. Wednesday is already booked; applying for the whole week splits
+    // into "Mon-Tue" and "Thu-Fri" instead of being rejected outright.
+    expect(splitBusinessDays(WEEK, new Set(["2026-09-23"]))).toEqual([
+      ["2026-09-21", "2026-09-22"],
+      ["2026-09-24", "2026-09-25"],
+    ]);
   });
 
-  it("can exclude the union of dates from more than one other request", () => {
-    // Two separate overlapping requests, one covering Monday and one
-    // covering Friday, leave only the middle three days.
-    expect(excludeBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-25"]))).toEqual({ kind: "requires_split" });
-    expect(excludeBusinessDays(WEEK, new Set(["2026-09-24", "2026-09-25"]))).toEqual({
-      kind: "trimmed",
-      businessDays: ["2026-09-21", "2026-09-22", "2026-09-23"],
-    });
+  it("can split around the union of dates from more than one other request", () => {
+    // Two separate existing requests, one covering Monday and one covering
+    // Friday, leave only the middle three days as a single run.
+    expect(splitBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-25"]))).toEqual([
+      ["2026-09-22", "2026-09-23", "2026-09-24"],
+    ]);
+    // Three separate excluded days scattered through the week leave three
+    // separate single-day runs.
+    expect(splitBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-23", "2026-09-25"]))).toEqual([
+      ["2026-09-22"],
+      ["2026-09-24"],
+    ]);
   });
 });
 
