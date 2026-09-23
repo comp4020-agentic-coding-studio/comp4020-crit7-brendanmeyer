@@ -1,10 +1,11 @@
 import { describe, expect, it } from "vitest";
 import {
   businessDaysBetween,
+  capToAvailableHours,
   computeHoursRequested,
   dailyHours,
-  splitBusinessDays,
-  summarizeBusinessDays,
+  summarizeDailyHours,
+  usedHoursByDate,
 } from "../src/lib/leave-hours";
 
 // Pure-function tests: no server boot, no database. This file must never
@@ -119,75 +120,110 @@ describe("dailyHours", () => {
   });
 });
 
-describe("splitBusinessDays", () => {
-  it("returns the original list untouched as one run when nothing is excluded", () => {
-    expect(splitBusinessDays(WEEK, new Set(["2026-10-01", "2026-10-02"]))).toEqual([WEEK]);
+describe("usedHoursByDate", () => {
+  it("maps each existing request's own per-day hours onto its dates", () => {
+    // 4h Monday, full 7h Tuesday-Wednesday, 2h Thursday.
+    const used = usedHoursByDate([
+      { startDate: "2026-09-21", endDate: "2026-09-24", hoursFirstDay: 4, hoursLastDay: 2 },
+    ]);
+    expect(used).toEqual(
+      new Map([
+        ["2026-09-21", 4],
+        ["2026-09-22", 7],
+        ["2026-09-23", 7],
+        ["2026-09-24", 2],
+      ]),
+    );
   });
 
-  it("returns no runs when every day is excluded", () => {
-    expect(splitBusinessDays(WEEK, new Set(WEEK))).toEqual([]);
-  });
-
-  it("returns one run — the prefix — when a suffix is excluded", () => {
-    expect(splitBusinessDays(WEEK, new Set(["2026-09-24", "2026-09-25"]))).toEqual([
-      ["2026-09-21", "2026-09-22", "2026-09-23"],
+  it("sums hours from more than one request that land on the same day", () => {
+    const used = usedHoursByDate([
+      { startDate: "2026-09-21", endDate: "2026-09-21", hoursFirstDay: 4, hoursLastDay: 4 },
+      { startDate: "2026-09-21", endDate: "2026-09-22", hoursFirstDay: 2, hoursLastDay: 3 },
     ]);
-  });
-
-  it("returns one run — the suffix — when a prefix is excluded", () => {
-    expect(splitBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-22"]))).toEqual([
-      ["2026-09-23", "2026-09-24", "2026-09-25"],
-    ]);
-  });
-
-  it("splits into two runs when a middle day is excluded (extra days before AND after)", () => {
-    // e.g. Wednesday is already booked; applying for the whole week splits
-    // into "Mon-Tue" and "Thu-Fri" instead of being rejected outright.
-    expect(splitBusinessDays(WEEK, new Set(["2026-09-23"]))).toEqual([
-      ["2026-09-21", "2026-09-22"],
-      ["2026-09-24", "2026-09-25"],
-    ]);
-  });
-
-  it("can split around the union of dates from more than one other request", () => {
-    // Two separate existing requests, one covering Monday and one covering
-    // Friday, leave only the middle three days as a single run.
-    expect(splitBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-25"]))).toEqual([
-      ["2026-09-22", "2026-09-23", "2026-09-24"],
-    ]);
-    // Three separate excluded days scattered through the week leave three
-    // separate single-day runs.
-    expect(splitBusinessDays(WEEK, new Set(["2026-09-21", "2026-09-23", "2026-09-25"]))).toEqual([
-      ["2026-09-22"],
-      ["2026-09-24"],
-    ]);
+    expect(used.get("2026-09-21")).toBe(6); // 4 + 2
+    expect(used.get("2026-09-22")).toBe(3);
   });
 });
 
-describe("summarizeBusinessDays", () => {
-  it("reassigns the new boundary day's hours instead of reusing the stale original boundary value", () => {
-    // hoursFirstDay=7, hoursLastDay=4: Mon-Thu are all 7h, Fri is 4h.
-    const original = dailyHours(WEEK, 7, 4);
-    const trimmed = summarizeBusinessDays(["2026-09-21", "2026-09-22", "2026-09-23", "2026-09-24"], original);
-    expect(trimmed).toEqual({
+describe("capToAvailableHours", () => {
+  it("keeps a single run untouched when nothing else uses those days", () => {
+    const daily = dailyHours(WEEK, 7, 7);
+    expect(capToAvailableHours(daily, new Map())).toEqual([daily]);
+  });
+
+  it("drops a day entirely once it's fully used (the old exclude-the-day behaviour)", () => {
+    const daily = dailyHours(WEEK, 7, 7);
+    const used = new Map([
+      ["2026-09-24", 7],
+      ["2026-09-25", 7],
+    ]);
+    expect(capToAvailableHours(daily, used)).toEqual([daily.slice(0, 3)]);
+  });
+
+  it("caps a partially-used day to what's left instead of dropping it — extending a 4h day to 7h", () => {
+    // The exact "I have an approved 4h Medical Leave day, I want the
+    // remaining 3h" case: a single-day request for the full 7h, with 4h
+    // already used that day, should be capped to 3h rather than blocked.
+    const daily = dailyHours(["2026-09-21"], 7, 7);
+    const used = new Map([["2026-09-21", 4]]);
+    expect(capToAvailableHours(daily, used)).toEqual([[{ date: "2026-09-21", hours: 3 }]]);
+  });
+
+  it("never over-caps: asking for less than what's available needs no capping", () => {
+    const daily = dailyHours(["2026-09-21"], 2, 2);
+    const used = new Map([["2026-09-21", 4]]); // 3h available, only 2h requested
+    expect(capToAvailableHours(daily, used)).toEqual([[{ date: "2026-09-21", hours: 2 }]]);
+  });
+
+  it("isolates a partially-used day as its own segment, splitting the run around it", () => {
+    // Wednesday already has 4h used (3h still available); the rest of the
+    // week is completely free.
+    const daily = dailyHours(WEEK, 7, 7);
+    const used = new Map([["2026-09-23", 4]]);
+    expect(capToAvailableHours(daily, used)).toEqual([
+      [
+        { date: "2026-09-21", hours: 7 },
+        { date: "2026-09-22", hours: 7 },
+      ],
+      [{ date: "2026-09-23", hours: 3 }],
+      [
+        { date: "2026-09-24", hours: 7 },
+        { date: "2026-09-25", hours: 7 },
+      ],
+    ]);
+  });
+
+  it("returns no segments when every day is fully used", () => {
+    const daily = dailyHours(WEEK, 7, 7);
+    const used = usedHoursByDate([{ startDate: WEEK[0], endDate: WEEK[4], hoursFirstDay: 7, hoursLastDay: 7 }]);
+    expect(capToAvailableHours(daily, used)).toEqual([]);
+  });
+});
+
+describe("summarizeDailyHours", () => {
+  it("turns one contiguous run back into row-shaped start/end/hours fields", () => {
+    expect(summarizeDailyHours([{ date: "2026-09-21", hours: 3 }])).toEqual({
       startDate: "2026-09-21",
-      endDate: "2026-09-24",
-      hoursFirstDay: 7,
-      hoursLastDay: 7, // Thursday's own (full-day) hours, not Friday's stale 4h
-      hoursRequested: 28,
+      endDate: "2026-09-21",
+      hoursFirstDay: 3,
+      hoursLastDay: 3,
+      hoursRequested: 3,
     });
   });
 
-  it("picks up a single remaining day's own hours for both first and last", () => {
-    // hoursFirstDay=2, hoursLastDay=4 across a 3-day range: Mon=2, Tue=7, Wed=4.
-    const original = dailyHours(["2026-09-21", "2026-09-22", "2026-09-23"], 2, 4);
-    const single = summarizeBusinessDays(["2026-09-22"], original);
-    expect(single).toEqual({
-      startDate: "2026-09-22",
-      endDate: "2026-09-22",
+  it("uses each end's own hours and sums the whole run", () => {
+    const daily = [
+      { date: "2026-09-21", hours: 7 },
+      { date: "2026-09-22", hours: 7 },
+      { date: "2026-09-23", hours: 3 },
+    ];
+    expect(summarizeDailyHours(daily)).toEqual({
+      startDate: "2026-09-21",
+      endDate: "2026-09-23",
       hoursFirstDay: 7,
-      hoursLastDay: 7,
-      hoursRequested: 7,
+      hoursLastDay: 3,
+      hoursRequested: 17,
     });
   });
 });

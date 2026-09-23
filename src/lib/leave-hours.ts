@@ -90,51 +90,81 @@ export function computeHoursRequested(
 }
 
 /**
- * Removes every date in excludeDates from businessDays, returning whatever
- * remains as however many contiguous runs it breaks into: [] if everything
- * was excluded, one run if it's a clean prefix/suffix/single-block trim,
- * two or more if the exclusion carves out the middle (or several separate
- * excluded stretches) — each run is still just as representable as a single
- * leave request, so a carve-out becomes several requests rather than a
- * dead end.
- *
- * excludeDates is a set of individual dates rather than a single start/end
- * range so callers can exclude the UNION of several other requests' days at
- * once (not just one), which is what lets overlap detection work out the
- * actual difference instead of falling back to the full entered hours.
+ * Sums, per calendar date, the hours a set of existing requests already
+ * consume — a day untouched by any of them is simply absent from the map
+ * (equivalent to 0 used). Pure: takes plain date-range/hours fields, not a
+ * DB row, so it composes with dailyHours() for any request-shaped object.
  */
-export function splitBusinessDays(businessDays: string[], excludeDates: ReadonlySet<string>): string[][] {
-  const runs: string[][] = [];
-  let current: string[] = [];
-  for (const day of businessDays) {
-    if (excludeDates.has(day)) {
-      if (current.length > 0) runs.push(current);
-      current = [];
-    } else {
-      current.push(day);
+export function usedHoursByDate(
+  requests: { startDate: string; endDate: string; hoursFirstDay: number; hoursLastDay: number }[],
+): Map<string, number> {
+  const used = new Map<string, number>();
+  for (const r of requests) {
+    for (const day of dailyHours(businessDaysBetween(r.startDate, r.endDate), r.hoursFirstDay, r.hoursLastDay)) {
+      used.set(day.date, (used.get(day.date) ?? 0) + day.hours);
     }
   }
-  if (current.length > 0) runs.push(current);
-  return runs;
+  return used;
 }
 
 /**
- * Turns a contiguous subset of an original request's business days back
- * into row-shaped fields, using the ORIGINAL per-day hours so a boundary
- * day that used to be a full "middle" day gets FULL_DAY_HOURS, not a stale
- * first/last-day value.
+ * Fits a request's own per-day hours into whatever's still available once
+ * other requests' usage (usedHoursByDate) is taken into account, returning
+ * however many separate requests it takes to represent the result:
+ * - a day that's already fully used (no hours left in FULL_DAY_HOURS) is
+ *   dropped entirely;
+ * - a day that's only partially used gets its hours capped to what's left,
+ *   and always becomes its own single-day request — a day that's part-used
+ *   can never be a full "every day in the middle is 7h" day of a longer
+ *   one, but a single-day request can be any amount in (0, FULL_DAY_HOURS];
+ * - a day that's entirely free continues whatever run is being built, at
+ *   its own originally-requested hours (unchanged).
+ *
+ * This is a strict generalization of the old "exclude the whole day or
+ * keep it" rule (which is just this with every day's usage at exactly 0 or
+ * exactly FULL_DAY_HOURS, never in between) — it's what lets extending an
+ * existing partial-day request (e.g. topping up an approved 4h Medical
+ * Leave day to the remaining 3h) work as a new, separate request instead of
+ * being blocked outright or silently discarding the still-available hours.
  */
-export function summarizeBusinessDays(
-  subsetBusinessDays: string[],
-  originalDailyHours: DailyHours[],
-): { startDate: string; endDate: string; hoursFirstDay: number; hoursLastDay: number; hoursRequested: number } {
-  const byDate = new Map(originalDailyHours.map((d) => [d.date, d.hours]));
-  const hours = subsetBusinessDays.map((d) => byDate.get(d) ?? 0);
+export function capToAvailableHours(daily: DailyHours[], usedHoursByDate: ReadonlyMap<string, number>): DailyHours[][] {
+  const segments: DailyHours[][] = [];
+  let current: DailyHours[] = [];
+  const flush = () => {
+    if (current.length > 0) segments.push(current);
+    current = [];
+  };
+
+  for (const day of daily) {
+    const available = FULL_DAY_HOURS - (usedHoursByDate.get(day.date) ?? 0);
+    if (available <= 0) {
+      flush();
+      continue;
+    }
+    if (available < FULL_DAY_HOURS) {
+      flush();
+      segments.push([{ date: day.date, hours: Math.min(day.hours, available) }]);
+      continue;
+    }
+    current.push(day);
+  }
+  flush();
+  return segments;
+}
+
+/** Turns one contiguous run of per-day hours back into row-shaped fields. */
+export function summarizeDailyHours(daily: DailyHours[]): {
+  startDate: string;
+  endDate: string;
+  hoursFirstDay: number;
+  hoursLastDay: number;
+  hoursRequested: number;
+} {
   return {
-    startDate: subsetBusinessDays[0],
-    endDate: subsetBusinessDays[subsetBusinessDays.length - 1],
-    hoursFirstDay: hours[0],
-    hoursLastDay: hours[hours.length - 1],
-    hoursRequested: hours.reduce((sum, h) => sum + h, 0),
+    startDate: daily[0].date,
+    endDate: daily[daily.length - 1].date,
+    hoursFirstDay: daily[0].hours,
+    hoursLastDay: daily[daily.length - 1].hours,
+    hoursRequested: daily.reduce((sum, d) => sum + d.hours, 0),
   };
 }
