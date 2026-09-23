@@ -11,7 +11,7 @@ export const ERROR_MESSAGES: Record<string, string> = {
   not_authorized: "You're not the manager for that request.",
   not_pending: "That request has already been decided.",
   fully_covered_by_existing:
-    "Every business day in this request is already covered by an existing request of the same leave type. Adjust the dates, or cancel that request first.",
+    "Every business day in this request is already covered by an existing leave request. Adjust the dates, or cancel that request first.",
   overlap_changed: "The overlapping request changed before you confirmed — please review and submit again.",
 };
 

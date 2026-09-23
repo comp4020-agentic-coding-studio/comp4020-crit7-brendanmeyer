@@ -31,7 +31,7 @@ export const POST: APIRoute = async ({ request, redirect }) => {
   });
 
   if (plan.kind === "invalid") return fail(plan.error);
-  if (plan.kind === "same_type_fully_covered") return fail("fully_covered_by_existing");
+  if (plan.kind === "fully_covered") return fail("fully_covered_by_existing");
 
   let result: Result<LeaveRequest>;
 
@@ -46,19 +46,20 @@ export const POST: APIRoute = async ({ request, redirect }) => {
       hoursLastDay: Number(hoursLastDay),
       reason,
     });
-  } else if (action === "trim" && plan.kind === "same_type") {
+  } else if (action === "trim" && (plan.kind === "overlap" || plan.kind === "medical_replace_candidate") && plan.trimmed) {
     const overlap = getRequestById(plan.overlapRequestId);
+    const trimmed = plan.trimmed;
     result = submitLeaveRequest({
       personId,
       leaveTypeId: Number(leaveTypeId),
-      startDate: plan.startDate,
-      endDate: plan.endDate,
-      hoursFirstDay: plan.hoursFirstDay,
-      hoursLastDay: plan.hoursLastDay,
+      startDate: trimmed.startDate,
+      endDate: trimmed.endDate,
+      hoursFirstDay: trimmed.hoursFirstDay,
+      hoursLastDay: trimmed.hoursLastDay,
       reason,
       systemNote:
-        `Adjusted to ${plan.hoursRequested}h (${plan.startDate} to ${plan.endDate}) — excludes days already ` +
-        `covered by ${overlap?.leaveType.name ?? "an existing request"} request #${plan.overlapRequestId}.`,
+        `Adjusted to ${trimmed.hoursRequested}h (${trimmed.startDate} to ${trimmed.endDate}) — excludes days ` +
+        `already covered by ${overlap?.leaveType.name ?? "an existing request"} request #${plan.overlapRequestId}.`,
     });
   } else if (action === "replace" && plan.kind === "medical_replace_candidate") {
     const overlap = getRequestById(plan.overlapRequestId);
@@ -75,7 +76,10 @@ export const POST: APIRoute = async ({ request, redirect }) => {
         `If approved, replaces overlapping Annual Leave request #${plan.overlapRequestId} ` +
         `(${overlap?.startDate} to ${overlap?.endDate}) — those days will be excluded and its balance restored.`,
     });
-  } else if (action === "as_entered" && (plan.kind === "medical_replace_candidate" || plan.kind === "other")) {
+  } else if (
+    action === "as_entered" &&
+    (plan.kind === "medical_replace_candidate" || plan.kind === "overlap" || plan.kind === "unresolvable")
+  ) {
     result = submitLeaveRequest({
       personId,
       leaveTypeId: Number(leaveTypeId),

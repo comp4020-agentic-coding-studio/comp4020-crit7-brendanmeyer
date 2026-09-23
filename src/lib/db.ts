@@ -239,21 +239,35 @@ export function listActiveOverlappingRequests(personId: number, startDate: strin
 // anything gets written. The employee confirms the outcome (see
 // src/pages/api/leave/submit-confirm.ts) before submitLeaveRequest ever runs.
 
+export type TrimmedRequest = {
+  startDate: string;
+  endDate: string;
+  hoursFirstDay: number;
+  hoursLastDay: number;
+  hoursRequested: number;
+};
+
 export type LeaveSubmissionPlan =
   | { kind: "invalid"; error: string }
   | { kind: "none" }
-  | { kind: "same_type_fully_covered"; overlapRequestId: number }
-  | {
-      kind: "same_type";
-      overlapRequestId: number;
-      startDate: string;
-      endDate: string;
-      hoursFirstDay: number;
-      hoursLastDay: number;
-      hoursRequested: number;
-    }
-  | { kind: "medical_replace_candidate"; overlapRequestId: number }
-  | { kind: "other"; overlapRequestId: number; overlapCount: number };
+  // Every business day is already booked under some existing request —
+  // there's no difference left to work out, so this is a hard error rather
+  // than something to confirm.
+  | { kind: "fully_covered" }
+  // The overlap can't be reduced to one contiguous remaining run (a "middle
+  // carve-out" — days left on both sides). Scope cut: offer only a plain
+  // "submit the full amount anyway?" confirmation.
+  | { kind: "unresolvable"; overlapRequestId: number; overlapCount: number }
+  // The default outcome for any overlap that CAN be resolved to a single
+  // difference: trimmed always holds the non-overlapping hours/dates,
+  // computed from the union of every overlapping request's days regardless
+  // of leave type.
+  | { kind: "overlap"; overlapRequestId: number; overlapCount: number; trimmed: TrimmedRequest }
+  // Medical Leave overlapping exactly one Annual Leave request specifically
+  // also gets the option to convert those days instead of just adding to
+  // them. `trimmed` (the "extra hours only" alternative) is present unless
+  // the overlap can't be cleanly reduced to one run.
+  | { kind: "medical_replace_candidate"; overlapRequestId: number; trimmed?: TrimmedRequest };
 
 export function planLeaveSubmission(input: {
   personId: number;
@@ -265,61 +279,55 @@ export function planLeaveSubmission(input: {
 }): LeaveSubmissionPlan {
   const leaveType = getLeaveType(input.leaveTypeId);
   if (!leaveType) return { kind: "invalid", error: "invalid_input" };
+  const accrues = leaveType.accrues;
+
+  function checkBalance(outcome: LeaveSubmissionPlan, hoursToCheck: number): LeaveSubmissionPlan {
+    if (!accrues) return outcome;
+    const balance = listBalances(input.personId).find((b) => b.leaveTypeId === input.leaveTypeId);
+    if ((balance?.balanceHours ?? 0) < hoursToCheck) return { kind: "invalid", error: "insufficient_balance" };
+    return outcome;
+  }
 
   const computed = computeHoursRequested(input.startDate, input.endDate, input.hoursFirstDay, input.hoursLastDay);
   if (!computed.ok) return { kind: "invalid", error: computed.error };
 
   const overlaps = listActiveOverlappingRequests(input.personId, input.startDate, input.endDate);
+  if (overlaps.length === 0) return checkBalance({ kind: "none" }, computed.hoursRequested);
 
-  let outcome: LeaveSubmissionPlan;
-  let hoursToCheck = computed.hoursRequested;
+  const original = dailyHours(computed.businessDays, input.hoursFirstDay, input.hoursLastDay);
 
-  if (overlaps.length === 0) {
-    outcome = { kind: "none" };
-  } else if (overlaps.length > 1) {
-    // Scope cut: more than one simultaneous overlap always falls back to a
-    // plain "submit anyway?" confirmation — no attempt to reconcile several
-    // candidates at once.
-    outcome = { kind: "other", overlapRequestId: overlaps[0].id, overlapCount: overlaps.length };
-  } else {
-    const existing = overlaps[0];
-    if (existing.leaveTypeId === input.leaveTypeId) {
-      const excluded = excludeBusinessDays(computed.businessDays, existing.startDate, existing.endDate);
-      if (excluded.kind === "unchanged") {
-        outcome = { kind: "none" };
-      } else if (excluded.kind === "fully_covered") {
-        outcome = { kind: "same_type_fully_covered", overlapRequestId: existing.id };
-      } else if (excluded.kind === "trimmed") {
-        const original = dailyHours(computed.businessDays, input.hoursFirstDay, input.hoursLastDay);
-        const trimmed = summarizeBusinessDays(excluded.businessDays, original);
-        outcome = { kind: "same_type", overlapRequestId: existing.id, ...trimmed };
-        hoursToCheck = trimmed.hoursRequested;
-      } else {
-        // requires_split: scope cut, see docs/plan-leave-management.md.
-        outcome = { kind: "other", overlapRequestId: existing.id, overlapCount: 1 };
-      }
-    } else if (leaveType.id === SEED_LEAVE_TYPES.medical && existing.leaveTypeId === SEED_LEAVE_TYPES.annual) {
-      const annualDays = businessDaysBetween(existing.startDate, existing.endDate);
-      const excluded = excludeBusinessDays(annualDays, input.startDate, input.endDate);
-      if (excluded.kind === "unchanged") {
-        outcome = { kind: "none" };
-      } else if (excluded.kind === "requires_split") {
-        outcome = { kind: "other", overlapRequestId: existing.id, overlapCount: 1 };
-      } else {
-        outcome = { kind: "medical_replace_candidate", overlapRequestId: existing.id };
-      }
-    } else {
-      outcome = { kind: "other", overlapRequestId: existing.id, overlapCount: 1 };
-    }
+  // Medical Leave replacing a single overlapping Annual Leave request is
+  // always offered, even when the new request's range fully consumes the
+  // annual one (the common "sick for my whole holiday" case) — so this is
+  // checked before the generic difference below, not instead of it.
+  if (overlaps.length === 1 && leaveType.id === SEED_LEAVE_TYPES.medical && overlaps[0].leaveTypeId === SEED_LEAVE_TYPES.annual) {
+    const annual = overlaps[0];
+    const annualDays = new Set(businessDaysBetween(annual.startDate, annual.endDate));
+    const excluded = excludeBusinessDays(computed.businessDays, annualDays);
+    const trimmed = excluded.kind === "trimmed" ? summarizeBusinessDays(excluded.businessDays, original) : undefined;
+    // Checked against the full entered hours (a safe upper bound: the
+    // trimmed alternative is always <=): submitLeaveRequest re-validates
+    // whichever amount is actually chosen at write time regardless.
+    return checkBalance({ kind: "medical_replace_candidate", overlapRequestId: annual.id, trimmed }, computed.hoursRequested);
   }
 
-  if (outcome.kind === "same_type_fully_covered") return outcome;
+  // Generic case: work out the difference against the UNION of every
+  // overlapping request's business days, regardless of leave type — so an
+  // overlap never just falls back to "continue with the full hours" when a
+  // clean adjustment is actually possible.
+  const excludeDates = new Set(overlaps.flatMap((o) => businessDaysBetween(o.startDate, o.endDate)));
+  const excluded = excludeBusinessDays(computed.businessDays, excludeDates);
+  const overlapRequestId = overlaps[0].id;
+  const overlapCount = overlaps.length;
 
-  if (leaveType.accrues) {
-    const balance = listBalances(input.personId).find((b) => b.leaveTypeId === input.leaveTypeId);
-    if ((balance?.balanceHours ?? 0) < hoursToCheck) return { kind: "invalid", error: "insufficient_balance" };
+  if (excluded.kind === "unchanged") return checkBalance({ kind: "none" }, computed.hoursRequested);
+  if (excluded.kind === "fully_covered") return { kind: "fully_covered" };
+  if (excluded.kind === "requires_split") {
+    return checkBalance({ kind: "unresolvable", overlapRequestId, overlapCount }, computed.hoursRequested);
   }
-  return outcome;
+
+  const trimmed = summarizeBusinessDays(excluded.businessDays, original);
+  return checkBalance({ kind: "overlap", overlapRequestId, overlapCount, trimmed }, trimmed.hoursRequested);
 }
 
 // Writes -----------------------------------------------------------------
@@ -458,7 +466,7 @@ export function decideLeaveRequest(input: {
       if (!annual || (annual.status !== "submitted" && annual.status !== "approved")) return;
 
       const annualDays = businessDaysBetween(annual.startDate, annual.endDate);
-      const excluded = excludeBusinessDays(annualDays, existing.startDate, existing.endDate);
+      const excluded = excludeBusinessDays(annualDays, new Set(businessDaysBetween(existing.startDate, existing.endDate)));
 
       if (excluded.kind === "fully_covered") {
         // Annual Leave always accrues in this org — no accrues check needed.

@@ -11,7 +11,11 @@ import { planLeaveSubmission, submitLeaveRequest } from "../../../lib/db";
 // existing active requests BEFORE anything is written. A clean submission
 // (or an invalid one) behaves exactly as before; an overlap redirects back
 // with ?confirm=<kind> instead of writing anything — the employee has to
-// explicitly confirm what happens next (see submit-confirm.ts).
+// explicitly confirm what happens next (see submit-confirm.ts). The apply
+// page also calls /api/leave/preview live (see preview.ts) so most of this
+// is already visible to the employee before they ever click Submit — this
+// route is the same check run again as the authoritative, JS-independent
+// gate at write time.
 export const POST: APIRoute = async ({ request, redirect }) => {
   const form = await request.formData();
   const personId = Number(form.get("personId"));
@@ -38,21 +42,23 @@ export const POST: APIRoute = async ({ request, redirect }) => {
     return redirect(`${back}?${new URLSearchParams({ error: plan.error, ...echo })}`, 303);
   }
 
-  // Nothing new to offer: every business day is already booked under the
-  // same leave type. This is a plain error, not something to confirm.
-  if (plan.kind === "same_type_fully_covered") {
+  // Nothing new to offer: every business day is already booked. This is a
+  // plain error, not something to confirm.
+  if (plan.kind === "fully_covered") {
     return redirect(`${back}?${new URLSearchParams({ error: "fully_covered_by_existing", ...echo })}`, 303);
   }
 
   if (plan.kind !== "none") {
-    const params = new URLSearchParams({ confirm: plan.kind, overlapRequestId: String(plan.overlapRequestId), ...echo });
-    if (plan.kind === "same_type") {
-      params.set("adjustedHours", String(plan.hoursRequested));
-      params.set("adjustedStartDate", plan.startDate);
-      params.set("adjustedEndDate", plan.endDate);
-    }
-    if (plan.kind === "other") {
-      params.set("overlapCount", String(plan.overlapCount));
+    const params = new URLSearchParams({
+      confirm: plan.kind,
+      overlapRequestId: String(plan.overlapRequestId),
+      ...echo,
+    });
+    if ("overlapCount" in plan) params.set("overlapCount", String(plan.overlapCount));
+    if ("trimmed" in plan && plan.trimmed) {
+      params.set("adjustedHours", String(plan.trimmed.hoursRequested));
+      params.set("adjustedStartDate", plan.trimmed.startDate);
+      params.set("adjustedEndDate", plan.trimmed.endDate);
     }
     return redirect(`${back}?${params}`, 303);
   }
