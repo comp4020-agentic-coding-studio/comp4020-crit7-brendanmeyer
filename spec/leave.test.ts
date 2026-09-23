@@ -182,18 +182,21 @@ describe("leave request validation", () => {
 });
 
 describe("leave preview API", () => {
-  it("reports the business days and hours a range covers", async () => {
+  it("reports the business days and hours a range covers, with no overlap flagged", async () => {
     const query = new URLSearchParams({
       startDate: "2026-11-02",
       endDate: "2026-11-06",
       hoursFirstDay: "7",
       hoursLastDay: "7",
+      personId: String(employeeA),
+      leaveTypeId: "1",
     });
     const res = await fetch(new URL(`/api/leave/preview?${query}`, baseUrl));
     expect(await res.json()).toEqual({
       ok: true,
       hoursRequested: 35,
       businessDays: ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"],
+      overlap: null,
     });
   });
 
@@ -206,6 +209,35 @@ describe("leave preview API", () => {
     });
     const res = await fetch(new URL(`/api/leave/preview?${query}`, baseUrl));
     expect(await res.json()).toEqual({ ok: false, error: "no_business_days" });
+  });
+
+  it("proactively flags an overlap before any submission happens", async () => {
+    // employeeA's cancelled Annual Leave request from the lifecycle test
+    // above is inactive, but its dates are convenient to reuse for a fresh
+    // active one here first.
+    await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeA),
+        leaveTypeId: "1",
+        startDate: "2027-01-04",
+        endDate: "2027-01-08",
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+      }),
+    );
+
+    const query = new URLSearchParams({
+      startDate: "2027-01-04",
+      endDate: "2027-01-08",
+      hoursFirstDay: "7",
+      hoursLastDay: "7",
+      personId: String(employeeA),
+      leaveTypeId: "1", // same type, same dates -> fully covered
+    });
+    const res = await fetch(new URL(`/api/leave/preview?${query}`, baseUrl));
+    const body = await res.json();
+    expect(body.overlap).toEqual({ kind: "fully_covered" });
   });
 });
 
@@ -245,7 +277,7 @@ describe("overlap: same leave type gets trimmed", () => {
     );
     expect(res.status).toBe(303);
     const params = locationParams(res.headers.get("location"));
-    expect(params.get("confirm")).toBe("same_type");
+    expect(params.get("confirm")).toBe("overlap");
     expect(params.get("overlapRequestId")).toBe(String(firstRequestId));
     expect(params.get("adjustedHours")).toBe("14");
     expect(params.get("adjustedStartDate")).toBe("2026-11-16");
@@ -429,40 +461,118 @@ describe("overlap: denying the replacement Medical Leave leaves Annual Leave unt
   });
 });
 
-describe("overlap: a different, unrelated leave type just asks to confirm", () => {
-  it("overlapping Personal/Carer's Leave over an approved Annual Leave request can be submitted as entered", async () => {
+describe("overlap: Medical Leave can also just take the extra hours instead of replacing", () => {
+  it("choosing 'trim' instead of 'replace' leaves the Annual Leave request completely alone", async () => {
+    const submitRes = await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeA),
+        leaveTypeId: "1",
+        startDate: "2027-02-01", // Monday
+        endDate: "2027-02-05", // Friday
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+      }),
+    );
+    expect(submitRes.status).toBe(303);
+    const annualId = extractRequestId(await get(`/ess/${employeeA}/absences/cancel/`));
+
+    await post(
+      "/api/leave/decide",
+      new URLSearchParams({ managerId: String(manager), requestId: String(annualId), decision: "approve" }),
+    );
+
+    // Overlaps the annual request's last 2 days, then extends one more
+    // business day beyond it (a clean suffix, so a trim is possible).
+    const medicalRes = await post(
+      "/api/leave/submit",
+      new URLSearchParams({
+        personId: String(employeeA),
+        leaveTypeId: "3",
+        startDate: "2027-02-04",
+        endDate: "2027-02-08", // Monday the following week
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+      }),
+    );
+    const params = locationParams(medicalRes.headers.get("location"));
+    expect(params.get("confirm")).toBe("medical_replace_candidate");
+    expect(params.get("adjustedHours")).toBe("7");
+    expect(params.get("adjustedStartDate")).toBe("2027-02-08");
+    expect(params.get("adjustedEndDate")).toBe("2027-02-08");
+
+    const confirmRes = await post(
+      "/api/leave/submit-confirm",
+      new URLSearchParams({
+        personId: String(employeeA),
+        leaveTypeId: "3",
+        startDate: "2027-02-04",
+        endDate: "2027-02-08",
+        hoursFirstDay: "7",
+        hoursLastDay: "7",
+        overlapRequestId: String(annualId),
+        action: "trim", // not "replace"
+      }),
+    );
+    expect(confirmRes.status).toBe(303);
+
+    const html = await get(`/ess/${employeeA}/absences/`);
+    // The medical request only covers the day that wasn't already annual
+    // leave, at its own 7 hours — not the full 3-day, 21-hour range entered.
+    expect(html).toContain("2027-02-08 to 2027-02-08");
+    expect(html).toContain("7.0 hours");
+    // The annual request is completely untouched: still the full 5-day
+    // week, still 35 hours, balance still down by exactly that (105h - 35h).
+    expect(html).toContain("2027-02-01 to 2027-02-05");
+    expect(html).toContain("35.0 hours");
+    expect(html).toContain("70.0");
+  });
+});
+
+describe("overlap: a different, unrelated leave type also gets the difference worked out", () => {
+  it("a Personal/Carer's Leave request partially overlapping an approved Annual Leave request gets trimmed", async () => {
+    // employeeB's approved Annual Leave request from an earlier describe
+    // block covers 2026-11-16 to 2026-11-17; this Carer's Leave request
+    // overlaps just the second of those two days, then extends two more.
     const res = await post(
       "/api/leave/submit",
       new URLSearchParams({
         personId: String(employeeB),
         leaveTypeId: "2", // Personal/Carer's Leave
-        startDate: "2026-11-16", // exactly the trimmed Annual Leave request from an earlier describe block
-        endDate: "2026-11-17",
+        startDate: "2026-11-17",
+        endDate: "2026-11-19",
         hoursFirstDay: "7",
         hoursLastDay: "7",
       }),
     );
     expect(res.status).toBe(303);
     const params = locationParams(res.headers.get("location"));
-    expect(params.get("confirm")).toBe("other");
+    // Not "medical_replace_candidate" (wrong type pairing) and not just
+    // allowed through in full: the difference is worked out generically,
+    // the same as the same-leave-type case, regardless of type.
+    expect(params.get("confirm")).toBe("overlap");
+    expect(params.get("adjustedHours")).toBe("14");
+    expect(params.get("adjustedStartDate")).toBe("2026-11-18");
+    expect(params.get("adjustedEndDate")).toBe("2026-11-19");
 
     const confirmRes = await post(
       "/api/leave/submit-confirm",
       new URLSearchParams({
         personId: String(employeeB),
         leaveTypeId: "2",
-        startDate: "2026-11-16",
-        endDate: "2026-11-17",
+        startDate: "2026-11-17",
+        endDate: "2026-11-19",
         hoursFirstDay: "7",
         hoursLastDay: "7",
         overlapRequestId: params.get("overlapRequestId") ?? "",
-        action: "as_entered",
+        action: "trim",
       }),
     );
     expect(confirmRes.status).toBe(303);
 
     const html = await get(`/ess/${employeeB}/absences/`);
     expect(html).toContain("Personal/Carer"); // rendered as Personal/Carer&#39;s Leave
+    expect(html).toContain("2026-11-18 to 2026-11-19");
     expect(html).toContain("14.0 hours");
   });
 });

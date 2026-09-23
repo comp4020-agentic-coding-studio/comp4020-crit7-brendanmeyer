@@ -188,15 +188,19 @@ the same query string (`leaveTypeId`, `startDate`, `endDate`,
 as the user left it rather than resetting it.
 
 The apply form also has one small, deliberate piece of client JS: as the
-user fills in the date/hours fields, it calls `GET /api/leave/preview`
-(a thin wrapper around `computeHoursRequested` — no arithmetic duplicated
-client-side) and shows a prominent `.hours-preview` readout of how many
-hours/business-days the request will actually count, before they submit.
-This is the one page where "no client JS" was worth breaking:
-real HORUS calculates duration live the same way, and it's the detail most
-likely to surprise someone unfamiliar with the business-day/partial-hours
-model. It degrades harmlessly with JS off — the readout just never appears,
-and submitting still works.
+user fills in the leave type/date/hours fields, it calls `GET
+/api/leave/preview` (a thin wrapper around `computeHoursRequested` and
+`planLeaveSubmission` — no arithmetic duplicated client-side) and shows two
+live readouts: `.hours-preview` (how many hours/business-days the request
+will actually count) and `#overlap-preview` (a proactive heads-up if it
+overlaps existing leave, and what submitting will offer to do about it) —
+both before the employee ever clicks Submit. This is the one page where "no
+client JS" was worth breaking: real HORUS calculates duration live the same
+way, and both details are the ones most likely to surprise someone
+unfamiliar with the business-day/partial-hours model or the overlap
+handling. It degrades harmlessly with JS off — the live readouts just never
+appear, and the reactive confirm-after-submit flow (see "Overlap detection",
+below) still works exactly the same either way.
 
 ## `db.ts` helpers and API routes
 
@@ -246,38 +250,68 @@ before anything is written, via a new read-only planner:
 
 ```ts
 planLeaveSubmission(input): LeaveSubmissionPlan
-// "invalid"                    -> same validation/balance errors as before
-// "none"                       -> no overlap; submit exactly as entered
-// "same_type_fully_covered"    -> every business day already booked under this type: plain error
-// "same_type"                  -> trims the new request to the hours NOT already
-//                                 covered by an existing same-type request
-// "medical_replace_candidate"  -> new request is Medical Leave overlapping an
-//                                 existing Annual Leave request — offers to convert
-//                                 the overlapping days
-// "other"                      -> any other overlap (different types, >1 overlap,
-//                                 or a "middle carve-out" — see scope cuts below):
-//                                 plain "submit anyway?" confirmation
+// "invalid"                   -> same validation/balance errors as before
+// "none"                      -> no overlap; submit exactly as entered
+// "fully_covered"             -> every business day already booked by some
+//                                existing request: plain error, nothing to add
+// "unresolvable"              -> the overlap can't be reduced to one clean
+//                                remaining run (a "middle carve-out" — see
+//                                scope cuts below): plain "submit anyway?"
+// "overlap"                   -> the default outcome whenever a clean
+//                                adjustment IS possible: always carries
+//                                `trimmed`, the non-overlapping hours/dates,
+//                                computed against the UNION of every
+//                                overlapping request's days, regardless of
+//                                leave type — this is what makes the
+//                                planner actually work out the difference
+//                                instead of just falling back to the full
+//                                entered hours whenever an overlap exists
+// "medical_replace_candidate" -> new request is Medical Leave overlapping a
+//                                single Annual Leave request specifically —
+//                                offers to convert the overlapping days, and
+//                                ALSO carries `trimmed` (the "just the extra
+//                                hours, leave Annual Leave alone" alternative)
+//                                whenever that's cleanly computable too
 ```
 
-Two pure helpers in `leave-hours.ts` do the actual day-level arithmetic,
-shared by both directions (trimming the *new* request against an existing
-one, or trimming the *existing Annual* request against a *new* Medical
-one): `excludeBusinessDays(businessDays, excludeStartISO, excludeEndISO)`
-(reports `unchanged` / `fully_covered` / `trimmed` / `requires_split`) and
-`summarizeBusinessDays(subsetDays, originalDailyHours)` (turns a contiguous
-remaining subset back into row-shaped start/end/hours fields, using each
-day's own original hours rather than reapplying stale first/last-day
-values). `computeHoursRequested` itself was refactored to share a new
-`dailyHours(businessDays, hoursFirstDay, hoursLastDay)` per-day breakdown
-rather than duplicating the first/last/middle-day logic a second time.
+Note that `"overlap"` is checked as the generic fallback for *any* overlap
+that isn't the medical/annual special case — it applies just as much to two
+overlapping requests of the same type as it does to two different,
+unrelated types. Working out the difference was originally same-type-only;
+it's now the default for any overlap, because "continue with the full
+entered hours" was never actually the right default once a clean adjustment
+could be computed.
+
+Three pure helpers in `leave-hours.ts` do the actual day-level arithmetic:
+`dailyHours(businessDays, hoursFirstDay, hoursLastDay)` (computeHoursRequested's
+per-day breakdown, shared rather than duplicated),
+`excludeBusinessDays(businessDays, excludeDates: ReadonlySet<string>)`
+(reports `unchanged` / `fully_covered` / `trimmed` / `requires_split` —
+takes a *set* of individual dates, not a single start/end range, so the
+planner can exclude the union of several overlapping requests' days at
+once, not just one), and `summarizeBusinessDays(subsetDays,
+originalDailyHours)` (turns a contiguous remaining subset back into
+row-shaped start/end/hours fields, using each day's own original hours
+rather than reapplying stale first/last-day values).
 
 **No overlap outcome writes anything by itself.** `submit.ts` redirects
 back to the apply page with `?confirm=<kind>&overlapRequestId=...&<echoed
 form fields>` (same query-string round-trip already used for the "keep my
 values on failure" behaviour) instead of calling `submitLeaveRequest`. The
-employee sees one of three confirm banners and picks an action; a new
-`POST /api/leave/submit-confirm` route re-runs `planLeaveSubmission` fresh
-(never trusting anything computed at render time) and only then writes.
+employee sees a confirm banner and picks an action (`trim`, `replace`, or
+`as_entered`); a new `POST /api/leave/submit-confirm` route re-runs
+`planLeaveSubmission` fresh (never trusting anything computed at render
+time) and only then writes.
+
+**This is also detected proactively, before the employee ever clicks
+Submit.** `/api/leave/preview` (already used for the live "N hours will
+count" readout) now also takes `personId`/`leaveTypeId` and runs
+`planLeaveSubmission`, returning an `overlap` field the apply page's script
+renders as a second live banner as the employee fills in the form. The
+actual `POST /api/leave/submit` still re-runs the same check as the
+authoritative, JS-independent gate — the proactive check is an earlier
+heads-up, not a replacement for it, and degrades harmlessly with JS off
+(the reactive confirm-after-submit flow still works exactly the same).
 
 **The Annual Leave trim/cancel + balance restore for a replacement only
 ever happens inside `decideLeaveRequest`, when the manager approves the
@@ -291,20 +325,24 @@ excluded. This ordering is deliberate: mutating the annual request earlier
 (at confirm-time) would mean a manager who then *denies* the medical
 request has already cost the employee their approved annual leave for
 nothing. `leaveRequests` gained two nullable columns for this:
-`replacesRequestId` (self-FK, set only on the replacement medical request)
-and `systemNote` (free text — the actual "notify the manager" mechanism,
-rendered on the approvals card and the history/absences views since there's
-no real notification channel by design).
+`replacesRequestId` (self-FK, set only when the employee picks "replace",
+never "trim") and `systemNote` (free text — the actual "notify the manager"
+mechanism, rendered on the approvals card and the history/absences views
+since there's no real notification channel by design).
 
 **Scope cuts, deliberately**: more than one simultaneous overlapping
-request always falls back to the plain "other, submit anyway?" path; a
-"middle carve-out" (the exclusion leaves days on *both* sides, so the
-remainder isn't one contiguous run) always falls back to "other" rather
-than splitting a request into two rows — realistic common cases (booking
-over the start/end of an existing period) are prefixes/suffixes, and
-handling a non-contiguous remainder would mean every read helper could no
-longer assume one row is one contiguous date range. Only Medical-over-Annual
-ever offers "replace" — no other leave-type pairing does.
+request always falls back to the plain "unresolvable, submit anyway?" path
+— no attempt to reconcile several candidates' exclusions against each
+other. A "middle carve-out" (the exclusion leaves days on *both* sides, so
+the remainder isn't one contiguous run) always falls back to
+"unresolvable" too rather than splitting a request into two rows —
+realistic common cases (booking over the start/end of an existing period)
+are prefixes/suffixes, and handling a non-contiguous remainder would mean
+every read helper could no longer assume one row is one contiguous date
+range. Only Medical-over-Annual ever offers "replace" — no other leave-type
+pairing does, and it's offered even when the medical range fully consumes
+the annual one (in which case there's no "extra hours" trim alternative,
+just replace-or-submit-in-full).
 
 ## Testing strategy
 
@@ -331,8 +369,12 @@ files, for two different things:
   an already-**approved** Annual Leave request, confirmed and then
   **approved**, checking both balances and the shrunk annual request; the
   same replacement flow but **denied** instead — the regression test for
-  "a denied replacement must leave the original request untouched"; and a
-  plain cross-type overlap submitted as entered.
+  "a denied replacement must leave the original request untouched"; choosing
+  "trim" instead of "replace" on that same medical/annual overlap, proving
+  the Annual Leave request is left completely alone either way; a
+  partially-overlapping *cross-type* request also getting the difference
+  worked out (not just same-type overlaps); and the proactive `/api/leave/preview`
+  overlap field itself, checked directly for a fully-covered case.
 
 `invariants.test.ts` (via the routes added to `spec/routes.ts`) proves the
 *pages* meet the platform's structural and accessibility floor;
