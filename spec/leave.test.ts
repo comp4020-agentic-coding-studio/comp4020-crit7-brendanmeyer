@@ -73,10 +73,10 @@ describe("leave request lifecycle", () => {
     expect(res.status).toBe(303);
   });
 
-  it("shows Approved and a decremented balance (140h - 35h = 15.0 days)", async () => {
+  it("shows Approved and a decremented balance (140h - 35h = 105.0h)", async () => {
     const html = await get(`/ess/${employeeA}/absences/`);
     expect(html).toContain("Approved");
-    expect(html).toContain("15.0");
+    expect(html).toContain("105.0");
   });
 
   it("employee cancels the approved leave", async () => {
@@ -94,7 +94,7 @@ describe("leave request lifecycle", () => {
   it("shows Cancel in Progress with the balance still down", async () => {
     const html = await get(`/ess/${employeeA}/absences/`);
     expect(html).toContain("Cancel in Progress");
-    expect(html).toContain("15.0");
+    expect(html).toContain("105.0");
   });
 
   it("the same request now shows in approvals as a Cancel Absence", async () => {
@@ -110,10 +110,10 @@ describe("leave request lifecycle", () => {
     expect(res.status).toBe(303);
   });
 
-  it("shows Cancelled and the balance restored to 20.0 days", async () => {
+  it("shows Cancelled and the balance restored to 140.0h", async () => {
     const html = await get(`/ess/${employeeA}/absences/`);
     expect(html).toContain("Cancelled");
-    expect(html).toContain("20.0");
+    expect(html).toContain("140.0");
   });
 
   it("the manager's view of the employee's history still retains the cancelled request", async () => {
@@ -139,10 +139,16 @@ describe("leave request validation", () => {
       }),
     );
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe(`/ess/${employeeB}/absences?error=insufficient_balance`);
+    const location = res.headers.get("location") ?? "";
+    expect(location.startsWith(`/ess/${employeeB}/absences?error=insufficient_balance`)).toBe(true);
 
-    const html = await get(`/ess/${employeeB}/absences/`);
+    // The rejected form's own values ride back on the redirect's query
+    // string, so following it re-renders the page with what the user typed
+    // rather than resetting the form.
+    const html = await get(location);
     expect(html).toContain("No leave requests yet.");
+    expect(html).toContain('value="2026-11-02"');
+    expect(html).toContain('value="2026-12-11"');
   });
 
   it("rejects a date range with zero business days", async () => {
@@ -158,9 +164,39 @@ describe("leave request validation", () => {
       }),
     );
     expect(res.status).toBe(303);
-    expect(res.headers.get("location")).toBe(`/ess/${employeeC}/absences?error=no_business_days`);
+    const location = res.headers.get("location") ?? "";
+    expect(location.startsWith(`/ess/${employeeC}/absences?error=no_business_days`)).toBe(true);
 
     const html = await get(`/ess/${employeeC}/absences/`);
     expect(html).toContain("No leave requests yet.");
+  });
+});
+
+describe("leave preview API", () => {
+  it("reports the business days and hours a range covers", async () => {
+    const query = new URLSearchParams({
+      startDate: "2026-11-02",
+      endDate: "2026-11-06",
+      hoursFirstDay: "7",
+      hoursLastDay: "7",
+    });
+    const res = await fetch(new URL(`/api/leave/preview?${query}`, baseUrl));
+    expect(await res.json()).toEqual({
+      ok: true,
+      hoursRequested: 35,
+      businessDays: ["2026-11-02", "2026-11-03", "2026-11-04", "2026-11-05", "2026-11-06"],
+      days: 5,
+    });
+  });
+
+  it("reports an error for a range with no business days", async () => {
+    const query = new URLSearchParams({
+      startDate: "2026-09-26",
+      endDate: "2026-09-27",
+      hoursFirstDay: "7",
+      hoursLastDay: "7",
+    });
+    const res = await fetch(new URL(`/api/leave/preview?${query}`, baseUrl));
+    expect(await res.json()).toEqual({ ok: false, error: "no_business_days" });
   });
 });

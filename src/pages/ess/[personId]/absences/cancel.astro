@@ -11,6 +11,12 @@ if (isManager(person)) return Astro.redirect(`/mss/${person.id}`, 302);
 
 const cancellable = listCancellableRequests(person.id);
 const error = errorMessage(Astro.url.searchParams.get("error") ?? undefined);
+
+// On a failed cancellation the API route redirects back with the
+// submitted requestId/reason, so the one form the user was filling in
+// doesn't reset to blank.
+const failedRequestId = Astro.url.searchParams.get("requestId");
+const failedReason = Astro.url.searchParams.get("cancellationReason") ?? "";
 ---
 
 <Base title="Cancel Absences">
@@ -34,7 +40,7 @@ const error = errorMessage(Astro.url.searchParams.get("error") ?? undefined);
         </p>
         <div class="field">
           <label for={`cancellationReason-${request.id}`}>Reason for cancelling</label>
-          <textarea id={`cancellationReason-${request.id}`} name="cancellationReason" rows="2" required />
+          <textarea id={`cancellationReason-${request.id}`} name="cancellationReason" rows="2" required>{String(request.id) === failedRequestId ? failedReason : ""}</textarea>
         </div>
         <button type="submit" class="secondary">
           Cancel this absence

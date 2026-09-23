@@ -242,6 +242,20 @@ button:hover {
   color: #55555b;
 }
 
+.hours-preview {
+  padding: 0.6rem 1rem;
+  border-radius: 0.25rem;
+  background: #efe9f9;
+  border: 1px solid #d6c8f0;
+  color: #3a2060;
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.hours-preview:empty {
+  display: none;
+}
+
 .banner {
   padding: 0.75rem 1rem;
   border-radius: 0.25rem;

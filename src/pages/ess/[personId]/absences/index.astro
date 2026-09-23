@@ -14,6 +14,19 @@ const leaveTypes = listLeaveTypes();
 const requests = listRequestsForPerson(person.id);
 const error = errorMessage(Astro.url.searchParams.get("error") ?? undefined);
 
+// On a failed submit the API route redirects back with the submitted
+// values on the query string, so a rejected request doesn't reset the form
+// the user just filled in.
+const params = Astro.url.searchParams;
+const formValues = {
+  leaveTypeId: params.get("leaveTypeId") ?? "",
+  startDate: params.get("startDate") ?? "",
+  endDate: params.get("endDate") ?? "",
+  hoursFirstDay: params.get("hoursFirstDay") || "7",
+  hoursLastDay: params.get("hoursLastDay") || "7",
+  reason: params.get("reason") ?? "",
+};
+
 function statusLabel(status: string): string {
   switch (status) {
     case "submitted":
@@ -42,30 +55,36 @@ function statusLabel(status: string): string {
     {
       balances.map((balance) => (
         <div class="balance-tile">
-          <div class="balance-days">{hoursToDays(balance.balanceHours).toFixed(1)}</div>
-          <div class="balance-label">{balance.leaveType.name} (days)</div>
+          <div class="balance-days">{balance.balanceHours.toFixed(1)}</div>
+          <div class="balance-label">{balance.leaveType.name} (hours)</div>
         </div>
       ))
     }
   </div>
 
-  <form class="card" method="post" action="/api/leave/submit">
+  <form class="card" method="post" action="/api/leave/submit" id="apply-leave-form">
     <input type="hidden" name="personId" value={person.id} />
     <h2>Apply for Leave</h2>
     <div class="field">
       <label for="leaveTypeId">Leave type</label>
       <select id="leaveTypeId" name="leaveTypeId" required>
-        {leaveTypes.map((leaveType) => <option value={leaveType.id}>{leaveType.name}</option>)}
+        {
+          leaveTypes.map((leaveType) => (
+            <option value={leaveType.id} selected={String(leaveType.id) === formValues.leaveTypeId}>
+              {leaveType.name}
+            </option>
+          ))
+        }
       </select>
     </div>
     <div class="field-row">
       <div class="field">
         <label for="startDate">Start date</label>
-        <input id="startDate" name="startDate" type="date" required />
+        <input id="startDate" name="startDate" type="date" required value={formValues.startDate} />
       </div>
       <div class="field">
         <label for="endDate">End date</label>
-        <input id="endDate" name="endDate" type="date" required />
+        <input id="endDate" name="endDate" type="date" required value={formValues.endDate} />
       </div>
     </div>
     <div class="field-row">
@@ -78,7 +97,7 @@ function statusLabel(status: string): string {
           min="0.5"
           max="7"
           step="0.5"
-          value="7"
+          value={formValues.hoursFirstDay}
           required
         />
       </div>
@@ -91,15 +110,16 @@ function statusLabel(status: string): string {
           min="0.5"
           max="7"
           step="0.5"
-          value="7"
+          value={formValues.hoursLastDay}
           required
         />
       </div>
     </div>
     <p class="hint">A full work day is 7 hours. Weekends never count towards a request.</p>
+    <p class="hours-preview" id="hours-preview" aria-live="polite"></p>
     <div class="field">
       <label for="reason">Reason (optional)</label>
-      <textarea id="reason" name="reason" rows="2"></textarea>
+      <textarea id="reason" name="reason" rows="2">{formValues.reason}</textarea>
     </div>
     <div class="field">
       <label for="attachment">Supporting document (optional)</label>
@@ -128,3 +148,48 @@ function statusLabel(status: string): string {
 
   <p><a href={`/ess/${person.id}/absences/cancel`}>Cancel an absence</a></p>
 </Base>
+
+<script>
+  // Live "this counts N hours towards your balance" readout as the user
+  // fills in the form. The arithmetic itself stays server-side
+  // (/api/leave/preview wraps src/lib/leave-hours.ts) — this only fetches
+  // and renders the result, so there's one source of truth for the math.
+  import { ERROR_MESSAGES } from "../../../../lib/error-messages";
+
+  const form = document.querySelector<HTMLFormElement>("#apply-leave-form");
+  const preview = document.querySelector<HTMLParagraphElement>("#hours-preview");
+
+  if (form && preview) {
+    const startDate = form.elements.namedItem("startDate") as HTMLInputElement;
+    const endDate = form.elements.namedItem("endDate") as HTMLInputElement;
+    const hoursFirstDay = form.elements.namedItem("hoursFirstDay") as HTMLInputElement;
+    const hoursLastDay = form.elements.namedItem("hoursLastDay") as HTMLInputElement;
+    const fields = [startDate, endDate, hoursFirstDay, hoursLastDay];
+
+    const update = async () => {
+      if (!startDate.value || !endDate.value || !hoursFirstDay.value || !hoursLastDay.value) {
+        preview.textContent = "";
+        return;
+      }
+      const query = new URLSearchParams({
+        startDate: startDate.value,
+        endDate: endDate.value,
+        hoursFirstDay: hoursFirstDay.value,
+        hoursLastDay: hoursLastDay.value,
+      });
+      const res = await fetch(`/api/leave/preview?${query}`);
+      const result = await res.json();
+      if (result.ok) {
+        const dayWord = result.businessDays.length === 1 ? "business day" : "business days";
+        preview.innerHTML =
+          `<strong>${result.hoursRequested} hour(s)</strong> (${result.days.toFixed(1)} day(s)) ` +
+          `across ${result.businessDays.length} ${dayWord} will count towards your balance.`;
+      } else {
+        preview.textContent = ERROR_MESSAGES[result.error] ?? "";
+      }
+    };
+
+    for (const field of fields) field.addEventListener("input", update);
+    update();
+  }
+</script>

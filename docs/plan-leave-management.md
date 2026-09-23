@@ -162,7 +162,7 @@ structural invariants can't drift as pages are added.
 |---|---|---|
 | `/` | "Absence Management" | tile grid, one tile per person, ESS or MSS link depending on `managerId === null` |
 | `/ess/[personId]` | person's name | "Absences" tile → real link; inert decorative tiles (Payslips, Personal Details) for PeopleSoft flavour |
-| `/ess/[personId]/absences` | "Manage Absences" | balance tiles (days), apply-absence form, request list with status badges, `?error=` banner |
+| `/ess/[personId]/absences` | "Manage Absences" | balance tiles (**hours**, matching the unit the balance is actually tracked and checked in), apply-absence form with a live hours-counted-towards-balance readout, request list with status badges, `?error=` banner |
 | `/ess/[personId]/absences/cancel` | "Cancel Absences" | one form per cancellable request (`submitted` or `approved`), mandatory reason |
 | `/mss/[personId]` | "Manager Self Service" | Approvals + My Team tiles |
 | `/mss/[personId]/approvals` | "Pending Approvals" | one form per pending row (leave requests **and** cancel requests, labelled distinctly), two named submit buttons |
@@ -179,7 +179,22 @@ Error banners: mutating routes redirect back to the originating page with
 `?error=<code>` (`insufficient_balance`, `no_business_days`, `invalid_hours`,
 `not_cancellable`, ...); `src/lib/error-messages.ts` maps the code to a
 message at render time. Keeps the POST→redirect→re-render pattern intact,
-no client JS, no session state.
+no session state — and on failure the submitted field values ride along on
+the same query string (`leaveTypeId`, `startDate`, `endDate`,
+`hoursFirstDay`, `hoursLastDay`, `reason` for submit; `requestId`,
+`cancellationReason` for cancel), so a rejected request re-renders the form
+as the user left it rather than resetting it.
+
+The apply form also has one small, deliberate piece of client JS: as the
+user fills in the date/hours fields, it calls `GET /api/leave/preview`
+(a thin wrapper around `computeHoursRequested`/`hoursToDays` — no arithmetic
+duplicated client-side) and shows a prominent `.hours-preview` readout of
+how many hours/days/business-days the request will actually count, before
+they submit. This is the one page where "no client JS" was worth breaking:
+real HORUS calculates duration live the same way, and it's the detail most
+likely to surprise someone unfamiliar with the business-day/partial-hours
+model. It degrades harmlessly with JS off — the readout just never appears,
+and submitting still works.
 
 ## `db.ts` helpers and API routes
 
@@ -216,7 +231,9 @@ Each mutating helper wraps its read+write in one `db.transaction()` so a
 double-click or two open tabs can't double-apply a decision. API routes
 (`src/pages/api/leave/submit.ts`, `cancel.ts`, `decide.ts`) are thin
 `POST: APIRoute` wrappers around these, same shape as the starter's
-`api/messages.ts`.
+`api/messages.ts`. `src/pages/api/leave/preview.ts` is a fourth, read-only
+`GET: APIRoute` — it wraps `computeHoursRequested`/`hoursToDays` as JSON for
+the apply form's live readout (see Pages, above) rather than a mutation.
 
 ## Testing strategy
 
