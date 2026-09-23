@@ -12,6 +12,10 @@ nav[aria-label="site"] {
   gap: 1rem;
   padding: 0.75rem 1.5rem;
   background: #4b2e83;
+  position: sticky;
+  top: 0;
+  z-index: 100;
+  box-shadow: 0 1px 4px rgb(0 0 0 / 15%);
 }
 
 nav[aria-label="site"] a {
