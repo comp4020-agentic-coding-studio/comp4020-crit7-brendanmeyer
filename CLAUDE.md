@@ -25,9 +25,10 @@ the same change if a design decision it documents changes.
   process, not through the spawned server child that owns the throwaway test
   database.
 - All leave-status writes go through the named `db.ts` helpers
-  (`submitLeaveRequest`, `cancelLeaveRequest`, `decideLeaveRequest`) — no
-  other code path sets `leaveRequests.status` directly. This is how the enum
-  stays honest without a SQL CHECK constraint.
+  (`submitLeaveRequest`, `submitLeaveRequestSegments`, `cancelLeaveRequest`,
+  `decideLeaveRequest`) — no other code path sets `leaveRequests.status`
+  directly. This is how the enum stays honest without a SQL CHECK
+  constraint.
 - Business-day and hours math lives only in `src/lib/leave-hours.ts` (pure,
   unit-tested). Don't duplicate the arithmetic inline in an API route or
   page.

@@ -8,7 +8,7 @@ import {
   businessDaysBetween,
   computeHoursRequested,
   dailyHours,
-  excludeBusinessDays,
+  splitBusinessDays,
   summarizeBusinessDays,
 } from "./leave-hours";
 import {
@@ -254,20 +254,19 @@ export type LeaveSubmissionPlan =
   // there's no difference left to work out, so this is a hard error rather
   // than something to confirm.
   | { kind: "fully_covered" }
-  // The overlap can't be reduced to one contiguous remaining run (a "middle
-  // carve-out" — days left on both sides). Scope cut: offer only a plain
-  // "submit the full amount anyway?" confirmation.
-  | { kind: "unresolvable"; overlapRequestId: number; overlapCount: number }
-  // The default outcome for any overlap that CAN be resolved to a single
-  // difference: trimmed always holds the non-overlapping hours/dates,
-  // computed from the union of every overlapping request's days regardless
+  // The default outcome for any overlap: segments always holds the
+  // non-overlapping days as however many separate contiguous requests it
+  // takes to represent them (almost always one; more than one when the
+  // employee is applying for extra days both before AND after something
+  // already booked, since that can't be expressed as a single date range).
+  // Computed from the union of every overlapping request's days, regardless
   // of leave type.
-  | { kind: "overlap"; overlapRequestId: number; overlapCount: number; trimmed: TrimmedRequest }
+  | { kind: "overlap"; overlapRequestId: number; overlapCount: number; segments: TrimmedRequest[] }
   // Medical Leave overlapping exactly one Annual Leave request specifically
   // also gets the option to convert those days instead of just adding to
-  // them. `trimmed` (the "extra hours only" alternative) is present unless
-  // the overlap can't be cleanly reduced to one run.
-  | { kind: "medical_replace_candidate"; overlapRequestId: number; trimmed?: TrimmedRequest };
+  // them. `segments` (the "extra days only" alternative) is present unless
+  // the medical request doesn't extend past the annual one at all.
+  | { kind: "medical_replace_candidate"; overlapRequestId: number; segments?: TrimmedRequest[] };
 
 export function planLeaveSubmission(input: {
   personId: number;
@@ -303,31 +302,32 @@ export function planLeaveSubmission(input: {
   if (overlaps.length === 1 && leaveType.id === SEED_LEAVE_TYPES.medical && overlaps[0].leaveTypeId === SEED_LEAVE_TYPES.annual) {
     const annual = overlaps[0];
     const annualDays = new Set(businessDaysBetween(annual.startDate, annual.endDate));
-    const excluded = excludeBusinessDays(computed.businessDays, annualDays);
-    const trimmed = excluded.kind === "trimmed" ? summarizeBusinessDays(excluded.businessDays, original) : undefined;
+    const runs = splitBusinessDays(computed.businessDays, annualDays);
+    const segments = runs.length > 0 ? runs.map((run) => summarizeBusinessDays(run, original)) : undefined;
     // Checked against the full entered hours (a safe upper bound: the
     // trimmed alternative is always <=): submitLeaveRequest re-validates
     // whichever amount is actually chosen at write time regardless.
-    return checkBalance({ kind: "medical_replace_candidate", overlapRequestId: annual.id, trimmed }, computed.hoursRequested);
+    return checkBalance({ kind: "medical_replace_candidate", overlapRequestId: annual.id, segments }, computed.hoursRequested);
   }
 
   // Generic case: work out the difference against the UNION of every
   // overlapping request's business days, regardless of leave type — so an
   // overlap never just falls back to "continue with the full hours" when a
-  // clean adjustment is actually possible.
+  // clean adjustment is actually possible. Splitting into multiple requests
+  // (rather than giving up) is what handles applying for extra days both
+  // before and after something already booked.
   const excludeDates = new Set(overlaps.flatMap((o) => businessDaysBetween(o.startDate, o.endDate)));
-  const excluded = excludeBusinessDays(computed.businessDays, excludeDates);
+  const runs = splitBusinessDays(computed.businessDays, excludeDates);
   const overlapRequestId = overlaps[0].id;
   const overlapCount = overlaps.length;
 
-  if (excluded.kind === "unchanged") return checkBalance({ kind: "none" }, computed.hoursRequested);
-  if (excluded.kind === "fully_covered") return { kind: "fully_covered" };
-  if (excluded.kind === "requires_split") {
-    return checkBalance({ kind: "unresolvable", overlapRequestId, overlapCount }, computed.hoursRequested);
-  }
+  const remainingDayCount = runs.reduce((sum, run) => sum + run.length, 0);
+  if (remainingDayCount === computed.businessDays.length) return checkBalance({ kind: "none" }, computed.hoursRequested);
+  if (runs.length === 0) return { kind: "fully_covered" };
 
-  const trimmed = summarizeBusinessDays(excluded.businessDays, original);
-  return checkBalance({ kind: "overlap", overlapRequestId, overlapCount, trimmed }, trimmed.hoursRequested);
+  const segments = runs.map((run) => summarizeBusinessDays(run, original));
+  const totalHours = segments.reduce((sum, s) => sum + s.hoursRequested, 0);
+  return checkBalance({ kind: "overlap", overlapRequestId, overlapCount, segments }, totalHours);
 }
 
 // Writes -----------------------------------------------------------------
@@ -390,6 +390,74 @@ export function submitLeaveRequest(input: {
       .get();
 
     return { ok: true, request } as const;
+  });
+}
+
+/**
+ * Submits a request that planLeaveSubmission had to split into multiple
+ * contiguous segments (see LeaveSubmissionPlan's "overlap"/"medical_replace_candidate"
+ * segments) — one row per segment, all inserted in a single transaction
+ * with ONE balance check against their combined total, so a partial split
+ * never gets partially written.
+ */
+export function submitLeaveRequestSegments(input: {
+  personId: number;
+  leaveTypeId: number;
+  reason?: string;
+  segments: TrimmedRequest[];
+  overlapRequestId: number;
+}): { ok: true; requests: LeaveRequest[] } | { ok: false; error: string } {
+  const leaveType = getLeaveType(input.leaveTypeId);
+  if (!leaveType) return { ok: false, error: "invalid_input" };
+  if (input.segments.length === 0) return { ok: false, error: "invalid_input" };
+
+  const totalHours = input.segments.reduce((sum, s) => sum + s.hoursRequested, 0);
+
+  return db.transaction((tx) => {
+    if (leaveType.accrues) {
+      const balance = tx
+        .select()
+        .from(leaveBalances)
+        .where(and(eq(leaveBalances.personId, input.personId), eq(leaveBalances.leaveTypeId, input.leaveTypeId)))
+        .get();
+      if ((balance?.balanceHours ?? 0) < totalHours) {
+        return { ok: false, error: "insufficient_balance" } as const;
+      }
+    }
+
+    const overlap = tx
+      .select({ request: leaveRequests, leaveType: leaveTypes })
+      .from(leaveRequests)
+      .innerJoin(leaveTypes, eq(leaveRequests.leaveTypeId, leaveTypes.id))
+      .where(eq(leaveRequests.id, input.overlapRequestId))
+      .get();
+    const overlapDescription = overlap
+      ? `${overlap.leaveType.name} request #${input.overlapRequestId} (${overlap.request.startDate} to ${overlap.request.endDate})`
+      : `request #${input.overlapRequestId}`;
+
+    const requests = input.segments.map((segment, index) =>
+      tx
+        .insert(leaveRequests)
+        .values({
+          personId: input.personId,
+          leaveTypeId: input.leaveTypeId,
+          startDate: segment.startDate,
+          endDate: segment.endDate,
+          hoursFirstDay: segment.hoursFirstDay,
+          hoursLastDay: segment.hoursLastDay,
+          hoursRequested: segment.hoursRequested,
+          reason: input.reason?.trim() || null,
+          status: "submitted",
+          systemNote:
+            input.segments.length > 1
+              ? `Part ${index + 1} of ${input.segments.length}: split around ${overlapDescription} so those days aren't double-counted.`
+              : `Adjusted to exclude days already covered by ${overlapDescription}.`,
+        })
+        .returning()
+        .get(),
+    );
+
+    return { ok: true, requests } as const;
   });
 }
 
@@ -466,11 +534,17 @@ export function decideLeaveRequest(input: {
       if (!annual || (annual.status !== "submitted" && annual.status !== "approved")) return;
 
       const annualDays = businessDaysBetween(annual.startDate, annual.endDate);
-      const excluded = excludeBusinessDays(annualDays, new Set(businessDaysBetween(existing.startDate, existing.endDate)));
+      const annualDaily = dailyHours(annualDays, annual.hoursFirstDay, annual.hoursLastDay);
+      const runs = splitBusinessDays(annualDays, new Set(businessDaysBetween(existing.startDate, existing.endDate)));
+      const segments = runs.map((run) => summarizeBusinessDays(run, annualDaily));
+      const restored = annual.hoursRequested - segments.reduce((sum, s) => sum + s.hoursRequested, 0);
 
-      if (excluded.kind === "fully_covered") {
-        // Annual Leave always accrues in this org — no accrues check needed.
-        if (annual.status === "approved") adjustBalance(annual.personId, annual.leaveTypeId, annual.hoursRequested);
+      // Annual Leave always accrues in this org — no accrues check needed.
+      if (annual.status === "approved" && restored > 0) {
+        adjustBalance(annual.personId, annual.leaveTypeId, restored);
+      }
+
+      if (segments.length === 0) {
         tx.update(leaveRequests)
           .set({
             status: "cancelled",
@@ -478,28 +552,42 @@ export function decideLeaveRequest(input: {
           })
           .where(eq(leaveRequests.id, annual.id))
           .run();
-      } else if (excluded.kind === "trimmed") {
-        const shrunk = summarizeBusinessDays(
-          excluded.businessDays,
-          dailyHours(annualDays, annual.hoursFirstDay, annual.hoursLastDay),
-        );
-        const restored = annual.hoursRequested - shrunk.hoursRequested;
-        if (annual.status === "approved" && restored > 0) {
-          adjustBalance(annual.personId, annual.leaveTypeId, restored);
-        }
-        tx.update(leaveRequests)
-          .set({
-            ...shrunk,
-            systemNote:
-              `Adjusted: ${restored.toFixed(1)}h excluded — Medical Leave request #${existing.id} ` +
-              `was approved for ${existing.startDate} to ${existing.endDate}. Originally ${annual.startDate} to ${annual.endDate}.`,
+        return;
+      }
+
+      const note = (index: number, total: number) =>
+        total > 1
+          ? `Part ${index + 1} of ${total}: split because Medical Leave request #${existing.id} was approved ` +
+            `for ${existing.startDate} to ${existing.endDate}. Originally ${annual.startDate} to ${annual.endDate}.`
+          : `Adjusted: excludes days now covered by approved Medical Leave request #${existing.id} ` +
+            `(${existing.startDate} to ${existing.endDate}). Originally ${annual.startDate} to ${annual.endDate}.`;
+
+      // The first remaining segment updates the existing row in place; any
+      // further segments (only when the medical dates carved a hole out of
+      // the middle of the annual request) become new rows of their own.
+      tx.update(leaveRequests)
+        .set({ ...segments[0], systemNote: note(0, segments.length) })
+        .where(eq(leaveRequests.id, annual.id))
+        .run();
+
+      for (let i = 1; i < segments.length; i++) {
+        tx.insert(leaveRequests)
+          .values({
+            personId: annual.personId,
+            leaveTypeId: annual.leaveTypeId,
+            startDate: segments[i].startDate,
+            endDate: segments[i].endDate,
+            hoursFirstDay: segments[i].hoursFirstDay,
+            hoursLastDay: segments[i].hoursLastDay,
+            hoursRequested: segments[i].hoursRequested,
+            reason: annual.reason,
+            status: annual.status,
+            decidedBy: annual.decidedBy,
+            decidedAt: annual.decidedAt,
+            systemNote: note(i, segments.length),
           })
-          .where(eq(leaveRequests.id, annual.id))
           .run();
       }
-      // "unchanged"/"requires_split": geometry can't have changed between
-      // confirm and decide, so these are unreachable in the normal flow —
-      // defensively, just skip the annual mutation if we somehow hit them.
     };
 
     if (existing.status === "submitted") {
