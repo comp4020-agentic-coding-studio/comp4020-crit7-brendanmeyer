@@ -1,0 +1,130 @@
+---
+import Base from "../../../../layouts/Base.astro";
+import { errorMessage } from "../../../../lib/error-messages";
+import { hoursToDays } from "../../../../lib/leave-hours";
+import { getPerson, isManager, listBalances, listLeaveTypes, listRequestsForPerson } from "../../../../lib/db";
+
+const personId = Number(Astro.params.personId);
+const person = getPerson(personId);
+if (!person) return Astro.redirect("/", 302);
+if (isManager(person)) return Astro.redirect(`/mss/${person.id}`, 302);
+
+const balances = listBalances(person.id);
+const leaveTypes = listLeaveTypes();
+const requests = listRequestsForPerson(person.id);
+const error = errorMessage(Astro.url.searchParams.get("error") ?? undefined);
+
+function statusLabel(status: string): string {
+  switch (status) {
+    case "submitted":
+      return "Submitted";
+    case "approved":
+      return "Approved";
+    case "denied":
+      return "Denied";
+    case "cancel_requested":
+      return "Cancel in Progress";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return status;
+  }
+}
+---
+
+<Base title="Manage Absences">
+  <h1>Manage Absences</h1>
+  <p class="hint">{person.name} · Employee Self Service</p>
+
+  {error && <p class="banner banner-error">{error}</p>}
+
+  <div class="balance-grid">
+    {
+      balances.map((balance) => (
+        <div class="balance-tile">
+          <div class="balance-days">{hoursToDays(balance.balanceHours).toFixed(1)}</div>
+          <div class="balance-label">{balance.leaveType.name} (days)</div>
+        </div>
+      ))
+    }
+  </div>
+
+  <form class="card" method="post" action="/api/leave/submit">
+    <input type="hidden" name="personId" value={person.id} />
+    <h2>Apply for Leave</h2>
+    <div class="field">
+      <label for="leaveTypeId">Leave type</label>
+      <select id="leaveTypeId" name="leaveTypeId" required>
+        {leaveTypes.map((leaveType) => <option value={leaveType.id}>{leaveType.name}</option>)}
+      </select>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="startDate">Start date</label>
+        <input id="startDate" name="startDate" type="date" required />
+      </div>
+      <div class="field">
+        <label for="endDate">End date</label>
+        <input id="endDate" name="endDate" type="date" required />
+      </div>
+    </div>
+    <div class="field-row">
+      <div class="field">
+        <label for="hoursFirstDay">Hours on first day</label>
+        <input
+          id="hoursFirstDay"
+          name="hoursFirstDay"
+          type="number"
+          min="0.5"
+          max="7"
+          step="0.5"
+          value="7"
+          required
+        />
+      </div>
+      <div class="field">
+        <label for="hoursLastDay">Hours on last day</label>
+        <input
+          id="hoursLastDay"
+          name="hoursLastDay"
+          type="number"
+          min="0.5"
+          max="7"
+          step="0.5"
+          value="7"
+          required
+        />
+      </div>
+    </div>
+    <p class="hint">A full work day is 7 hours. Weekends never count towards a request.</p>
+    <div class="field">
+      <label for="reason">Reason (optional)</label>
+      <textarea id="reason" name="reason" rows="2"></textarea>
+    </div>
+    <div class="field">
+      <label for="attachment">Supporting document (optional)</label>
+      <input id="attachment" name="attachment" type="file" disabled />
+      <p class="hint">Attachments aren't stored in this prototype.</p>
+    </div>
+    <button type="submit">Submit request</button>
+  </form>
+
+  <h2>Your Requests</h2>
+  {requests.length === 0 && <p class="empty-state">No leave requests yet.</p>}
+  {
+    requests.map((request) => (
+      <div class="list-row">
+        <div class="list-row-main">
+          <div class="list-row-title">{request.leaveType.name}</div>
+          <div class="list-row-meta">
+            {request.startDate} to {request.endDate} · {hoursToDays(request.hoursRequested).toFixed(1)} days
+          </div>
+          {request.reason && <div class="list-row-meta">Reason: {request.reason}</div>}
+        </div>
+        <span class={`status-pill status-${request.status}`}>{statusLabel(request.status)}</span>
+      </div>
+    ))
+  }
+
+  <p><a href={`/ess/${person.id}/absences/cancel`}>Cancel an absence</a></p>
+</Base>

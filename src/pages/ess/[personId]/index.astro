@@ -1,0 +1,28 @@
+---
+import Base from "../../../layouts/Base.astro";
+import { getPerson, isManager } from "../../../lib/db";
+
+const personId = Number(Astro.params.personId);
+const person = getPerson(personId);
+if (!person) return Astro.redirect("/", 302);
+if (isManager(person)) return Astro.redirect(`/mss/${person.id}`, 302);
+---
+
+<Base title={person.name}>
+  <h1>{person.name}</h1>
+  <p class="hint">{person.title} · Employee Self Service</p>
+  <div class="tile-grid">
+    <a class="tile" href={`/ess/${person.id}/absences`}>
+      <span class="tile-icon" aria-hidden="true">🗓️</span>
+      <span class="list-row-title">Absences</span>
+    </a>
+    <div class="tile-inert" aria-hidden="true">
+      <span class="tile-icon">💲</span>
+      <span class="list-row-title">Payslips</span>
+    </div>
+    <div class="tile-inert" aria-hidden="true">
+      <span class="tile-icon">👤</span>
+      <span class="list-row-title">Personal Details</span>
+    </div>
+  </div>
+</Base>

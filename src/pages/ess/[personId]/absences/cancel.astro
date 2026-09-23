@@ -1,0 +1,47 @@
+---
+import Base from "../../../../layouts/Base.astro";
+import { errorMessage } from "../../../../lib/error-messages";
+import { hoursToDays } from "../../../../lib/leave-hours";
+import { getPerson, isManager, listCancellableRequests } from "../../../../lib/db";
+
+const personId = Number(Astro.params.personId);
+const person = getPerson(personId);
+if (!person) return Astro.redirect("/", 302);
+if (isManager(person)) return Astro.redirect(`/mss/${person.id}`, 302);
+
+const cancellable = listCancellableRequests(person.id);
+const error = errorMessage(Astro.url.searchParams.get("error") ?? undefined);
+---
+
+<Base title="Cancel Absences">
+  <h1>Cancel Absences</h1>
+  <p class="hint">{person.name} · Employee Self Service</p>
+
+  {error && <p class="banner banner-error">{error}</p>}
+
+  {cancellable.length === 0 && <p class="empty-state">You have no requests that can be cancelled.</p>}
+  {
+    cancellable.map((request) => (
+      <form class="card" method="post" action="/api/leave/cancel">
+        <input type="hidden" name="personId" value={person.id} />
+        <input type="hidden" name="requestId" value={request.id} />
+        <h2>
+          {request.leaveType.name} · {request.startDate} to {request.endDate}
+        </h2>
+        <p class="list-row-meta">
+          {hoursToDays(request.hoursRequested).toFixed(1)} days ·{" "}
+          <span class={`status-pill status-${request.status}`}>{request.status}</span>
+        </p>
+        <div class="field">
+          <label for={`cancellationReason-${request.id}`}>Reason for cancelling</label>
+          <textarea id={`cancellationReason-${request.id}`} name="cancellationReason" rows="2" required />
+        </div>
+        <button type="submit" class="secondary">
+          Cancel this absence
+        </button>
+      </form>
+    ))
+  }
+
+  <p><a href={`/ess/${person.id}/absences`}>Back to absences</a></p>
+</Base>
