@@ -32,15 +32,8 @@ export const GET: APIRoute = async ({ url }) => {
       overlap = { kind: "invalid", error: plan.error };
     } else if (plan.kind === "fully_covered") {
       overlap = { kind: "fully_covered" };
-    } else if (plan.kind === "unresolvable") {
-      overlap = { kind: "unresolvable" };
     } else if (plan.kind === "overlap" || plan.kind === "medical_replace_candidate") {
-      overlap = {
-        kind: plan.kind,
-        adjustedHours: plan.trimmed?.hoursRequested,
-        adjustedStartDate: plan.trimmed?.startDate,
-        adjustedEndDate: plan.trimmed?.endDate,
-      };
+      overlap = { kind: plan.kind, segments: plan.segments ?? null };
     }
     // plan.kind === "none": overlap stays null.
   }

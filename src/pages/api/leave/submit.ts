@@ -10,12 +10,16 @@ import { planLeaveSubmission, submitLeaveRequest } from "../../../lib/db";
 // planLeaveSubmission checks the new request against the employee's own
 // existing active requests BEFORE anything is written. A clean submission
 // (or an invalid one) behaves exactly as before; an overlap redirects back
-// with ?confirm=<kind> instead of writing anything — the employee has to
-// explicitly confirm what happens next (see submit-confirm.ts). The apply
-// page also calls /api/leave/preview live (see preview.ts) so most of this
-// is already visible to the employee before they ever click Submit — this
-// route is the same check run again as the authoritative, JS-independent
-// gate at write time.
+// with ?confirm=<kind>&overlapRequestId=<id> instead of writing anything —
+// the employee has to explicitly confirm what happens next (see
+// submit-confirm.ts). The redirect deliberately doesn't carry the computed
+// segments/adjusted-hours themselves (an overlap can now split into any
+// number of them) — the apply page re-runs planLeaveSubmission itself from
+// the echoed original fields to render whatever is currently true, the same
+// way submit-confirm.ts does before writing. The apply page also calls
+// /api/leave/preview live (see preview.ts) so most of this is already
+// visible to the employee before they ever click Submit — this route is the
+// same check run again as the authoritative, JS-independent gate at write time.
 export const POST: APIRoute = async ({ request, redirect }) => {
   const form = await request.formData();
   const personId = Number(form.get("personId"));
@@ -54,12 +58,6 @@ export const POST: APIRoute = async ({ request, redirect }) => {
       overlapRequestId: String(plan.overlapRequestId),
       ...echo,
     });
-    if ("overlapCount" in plan) params.set("overlapCount", String(plan.overlapCount));
-    if ("trimmed" in plan && plan.trimmed) {
-      params.set("adjustedHours", String(plan.trimmed.hoursRequested));
-      params.set("adjustedStartDate", plan.trimmed.startDate);
-      params.set("adjustedEndDate", plan.trimmed.endDate);
-    }
     return redirect(`${back}?${params}`, 303);
   }
 

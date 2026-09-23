@@ -1,5 +1,5 @@
 import type { APIRoute } from "astro";
-import { type LeaveRequest, type Result, getRequestById, planLeaveSubmission, submitLeaveRequest } from "../../../lib/db";
+import { planLeaveSubmission, submitLeaveRequest, submitLeaveRequestSegments } from "../../../lib/db";
 
 // Finalizes a submission the employee confirmed on the absences page after
 // planLeaveSubmission flagged an overlap (see submit.ts). Re-plans fresh
@@ -33,11 +33,9 @@ export const POST: APIRoute = async ({ request, redirect }) => {
   if (plan.kind === "invalid") return fail(plan.error);
   if (plan.kind === "fully_covered") return fail("fully_covered_by_existing");
 
-  let result: Result<LeaveRequest>;
-
   if (plan.kind === "none") {
     // The overlap resolved itself since the plan was made — just submit as entered.
-    result = submitLeaveRequest({
+    const result = submitLeaveRequest({
       personId,
       leaveTypeId: Number(leaveTypeId),
       startDate,
@@ -46,24 +44,27 @@ export const POST: APIRoute = async ({ request, redirect }) => {
       hoursLastDay: Number(hoursLastDay),
       reason,
     });
-  } else if (action === "trim" && (plan.kind === "overlap" || plan.kind === "medical_replace_candidate") && plan.trimmed) {
-    const overlap = getRequestById(plan.overlapRequestId);
-    const trimmed = plan.trimmed;
-    result = submitLeaveRequest({
+    if (!result.ok) return fail(result.error);
+    return redirect(back, 303);
+  }
+
+  if (action === "trim" && (plan.kind === "overlap" || plan.kind === "medical_replace_candidate") && plan.segments) {
+    // One row when the difference is a single contiguous run (the common
+    // case), several when applying for extra days both before and after
+    // something already booked means it has to split into more than one.
+    const result = submitLeaveRequestSegments({
       personId,
       leaveTypeId: Number(leaveTypeId),
-      startDate: trimmed.startDate,
-      endDate: trimmed.endDate,
-      hoursFirstDay: trimmed.hoursFirstDay,
-      hoursLastDay: trimmed.hoursLastDay,
       reason,
-      systemNote:
-        `Adjusted to ${trimmed.hoursRequested}h (${trimmed.startDate} to ${trimmed.endDate}) — excludes days ` +
-        `already covered by ${overlap?.leaveType.name ?? "an existing request"} request #${plan.overlapRequestId}.`,
+      segments: plan.segments,
+      overlapRequestId: plan.overlapRequestId,
     });
-  } else if (action === "replace" && plan.kind === "medical_replace_candidate") {
-    const overlap = getRequestById(plan.overlapRequestId);
-    result = submitLeaveRequest({
+    if (!result.ok) return fail(result.error);
+    return redirect(back, 303);
+  }
+
+  if (action === "replace" && plan.kind === "medical_replace_candidate") {
+    const result = submitLeaveRequest({
       personId,
       leaveTypeId: Number(leaveTypeId),
       startDate,
@@ -73,14 +74,15 @@ export const POST: APIRoute = async ({ request, redirect }) => {
       reason,
       replacesRequestId: plan.overlapRequestId,
       systemNote:
-        `If approved, replaces overlapping Annual Leave request #${plan.overlapRequestId} ` +
-        `(${overlap?.startDate} to ${overlap?.endDate}) — those days will be excluded and its balance restored.`,
+        `If approved, replaces overlapping Annual Leave request #${plan.overlapRequestId} — ` +
+        `those days will be excluded from it and its balance restored.`,
     });
-  } else if (
-    action === "as_entered" &&
-    (plan.kind === "medical_replace_candidate" || plan.kind === "overlap" || plan.kind === "unresolvable")
-  ) {
-    result = submitLeaveRequest({
+    if (!result.ok) return fail(result.error);
+    return redirect(back, 303);
+  }
+
+  if (action === "as_entered" && (plan.kind === "medical_replace_candidate" || plan.kind === "overlap")) {
+    const result = submitLeaveRequest({
       personId,
       leaveTypeId: Number(leaveTypeId),
       startDate,
@@ -89,11 +91,11 @@ export const POST: APIRoute = async ({ request, redirect }) => {
       hoursLastDay: Number(hoursLastDay),
       reason,
     });
-  } else {
-    // The action doesn't match what's actually true right now.
-    return fail("overlap_changed");
+    if (!result.ok) return fail(result.error);
+    return redirect(back, 303);
   }
 
-  if (!result.ok) return fail(result.error);
-  return redirect(back, 303);
+  // The action doesn't match what's actually true right now (state moved,
+  // or a stale/tampered form field).
+  return fail("overlap_changed");
 };
